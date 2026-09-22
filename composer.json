@@ -1,0 +1,36 @@
+{
+    "name": "lawmatic/court-monitor",
+    "description": "PHP-клиент сервиса мониторинга судебных дел Lawmatic: каталог судов, парсер и транслятор",
+    "type": "library",
+    "license": "proprietary",
+    "require": {
+        "php": ">=8.2",
+        "psr/log": "^1.1 || ^2.0 || ^3.0",
+        "symfony/http-client-contracts": "^3.0"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^9.6",
+        "symfony/http-client": "^6.4 || ^7.0"
+    },
+    "suggest": {
+        "symfony/http-client": "Реализация HttpClientInterface для боевой работы"
+    },
+    "autoload": {
+        "psr-4": {
+            "Lawmatic\\CourtMonitor\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Lawmatic\\CourtMonitor\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "branch-alias": {
+            "dev-main": "1.0.x-dev"
+        }
+    },
+    "config": {
+        "sort-packages": true
+    }
+}
