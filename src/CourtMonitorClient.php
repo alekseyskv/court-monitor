@@ -99,17 +99,47 @@ class CourtMonitorClient implements CourtMonitorClientInterface
     }
 
     /**
+     * Постраничный поиск по каталогу. Фильтры уходят в каталог как есть, условия
+     * объединяются по «И». Каталог сам ограничивает `limit` (не больше 500),
+     * а на неверный фильтр отвечает HTTP 400 — {@see CourtMonitorTransportException}.
+     *
+     * @param array<string, mixed> $filter
+     * @return array{items: array<int, array<string, mixed>>, total: int, limit: int, offset: int}
+     */
+    public function searchCourts(array $filter = [], int $limit = 50, int $offset = 0): array
+    {
+        $response = $this->json('POST', $this->courtsUrl . '/api/v1/courts/search', [
+            'headers' => $this->courtsHeaders(),
+            'json'    => ['limit' => $limit, 'offset' => $offset] + $filter,
+        ]);
+
+        return [
+            'items'  => is_array($response['items'] ?? null) ? array_values($response['items']) : [],
+            'total'  => (int) ($response['total'] ?? 0),
+            'limit'  => (int) ($response['limit'] ?? $limit),
+            'offset' => (int) ($response['offset'] ?? $offset),
+        ];
+    }
+
+    /**
+     * Типы судов каталога `{code, name, kbk}` — для фильтра по типу.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function getCourtTypes(): array
+    {
+        return array_values($this->json('GET', $this->courtsUrl . '/api/v1/court-types', [
+            'headers' => $this->courtsHeaders(),
+        ]));
+    }
+
+    /**
      * @param array<string, array{value: string, match: string}> $filter условия поиска
      * @return array<int, array<string, mixed>>
      */
     private function courtItems(array $filter): array
     {
-        $response = $this->json('POST', $this->courtsUrl . '/api/v1/courts/search', [
-            'headers' => $this->courtsHeaders(),
-            'json'    => ['limit' => self::COURTS_SEARCH_LIMIT, 'offset' => 0] + $filter,
-        ]);
-
-        return is_array($response['items'] ?? null) ? array_values($response['items']) : [];
+        return $this->searchCourts($filter, self::COURTS_SEARCH_LIMIT)['items'];
     }
 
     /**

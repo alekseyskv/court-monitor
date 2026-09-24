@@ -32,8 +32,10 @@ $client = new CourtMonitorClient(
 
 | Метод | Что делает | Раздел |
 |-------|------------|--------|
-| `searchCourtByName`, `searchCourtByCode` | Поиск суда в каталоге | §1.1, §1.2 |
+| `searchCourtByName`, `searchCourtByCode` | Поиск суда в каталоге (до 20 судов) | §1.1, §1.2 |
+| `searchCourts` | Постраничный поиск с любыми фильтрами: `{items, total, limit, offset}` | §1.1 |
 | `getCourtDetail` | Карточка суда с иерархией | §1.3 |
+| `getCourtTypes` | Типы судов `{code, name, kbk}` | §1.4 |
 | `getParserFor` | `parser_id` и `court_id` по URL сайта суда | §2 |
 | `getTotalCounts` | Сколько дел и страниц найдёт поиск | §3.1 |
 | `getShortCasesFromPage` | Краткие карточки с одной страницы | §3.2 |
@@ -174,6 +176,25 @@ curl -sS "https://courts.lawmatic.ru/api/v1/courts/${COURT_ID}" \
 
 Ответ — карточка суда без обёртки (как элемент `items` в §1.1), с `hierarchy`
 вплоть до Верховного суда. Суда нет — HTTP 404 `{"error":"court not found"}`.
+
+---
+
+### 1.4. Типы судов
+
+**Метод клиента:** `getCourtTypes` — для фильтра `court_type` в поиске.
+
+```bash
+curl -sS "https://courts.lawmatic.ru/api/v1/court-types" \
+  -H "X-Auth-Token: ${COURTS_TOKEN}"
+```
+
+Ответ — массив `{"code":"RS","name":"...","kbk":"..."}`: код типа, название
+и КБК госпошлины по умолчанию.
+
+Постраничный поиск по каталогу — `searchCourts($filter, $limit, $offset)`: фильтры
+как в §1.1, `limit` — до 500 (0 — каталог возьмёт 50), ответ — `{items, total, limit, offset}`,
+где `total` — сколько судов подходит под фильтр всего. Каталог считает запросы
+по токену за сутки и при исчерпании квоты отвечает HTTP 429.
 
 ---
 

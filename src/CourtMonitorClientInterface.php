@@ -38,6 +38,23 @@ interface CourtMonitorClientInterface
     public function getCourtDetail(int|string $courtId): array;
 
     /**
+     * Постраничный поиск по каталогу судов с любыми фильтрами каталога
+     * (`court_type`, `name`, `code`, `address`, `parent` — как `{value, match}`,
+     * `parent_missing`, `requires_attention`). Пустой фильтр — весь каталог.
+     *
+     * @param array<string, mixed> $filter
+     * @return array{items: array<int, array<string, mixed>>, total: int, limit: int, offset: int}
+     */
+    public function searchCourts(array $filter = [], int $limit = 50, int $offset = 0): array;
+
+    /**
+     * Типы судов каталога: `{code, name, kbk}`.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function getCourtTypes(): array;
+
+    /**
      * По URL сайта суда возвращает {parser_id, court_id, court_id_can_empty}.
      *
      * @return array<string, mixed>

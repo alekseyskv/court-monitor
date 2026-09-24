@@ -167,6 +167,41 @@ final class CourtMonitorClientTest extends TestCase
         self::assertContains('x-auth-token: courts-token', $this->requests[0]['headers']);
     }
 
+    public function testCourtSearchPassesFilterAndPagination(): void
+    {
+        $client = $this->client([new MockResponse('{"items":[{"id":7}],"total":131,"limit":50,"offset":100}')]);
+
+        $page = $client->searchCourts(['court_type' => 'RS', 'name' => ['value' => 'Пресн', 'match' => 'contains']], 50, 100);
+
+        self::assertSame(['items' => [['id' => 7]], 'total' => 131, 'limit' => 50, 'offset' => 100], $page);
+        self::assertSame(self::COURTS_URL . '/api/v1/courts/search', $this->requests[0]['url']);
+        self::assertContains('x-auth-token: courts-token', $this->requests[0]['headers']);
+        self::assertSame([
+            'limit' => 50,
+            'offset' => 100,
+            'court_type' => 'RS',
+            'name' => ['value' => 'Пресн', 'match' => 'contains'],
+        ], $this->requests[0]['body']);
+    }
+
+    public function testCourtSearchWithoutFilterAsksWholeCatalog(): void
+    {
+        $client = $this->client([new MockResponse('{}')]);
+
+        self::assertSame(['items' => [], 'total' => 0, 'limit' => 50, 'offset' => 0], $client->searchCourts());
+        self::assertSame(['limit' => 50, 'offset' => 0], $this->requests[0]['body']);
+    }
+
+    public function testCourtTypesAreListFromCatalog(): void
+    {
+        $client = $this->client([new MockResponse('[{"code":"RS","name":"Районный суд","kbk":"18210803010011050110"}]')]);
+
+        self::assertSame([['code' => 'RS', 'name' => 'Районный суд', 'kbk' => '18210803010011050110']], $client->getCourtTypes());
+        self::assertSame('GET', $this->requests[0]['method']);
+        self::assertSame(self::COURTS_URL . '/api/v1/court-types', $this->requests[0]['url']);
+        self::assertContains('x-auth-token: courts-token', $this->requests[0]['headers']);
+    }
+
     public function testCourtCatalogWithoutTokenSendsNoAuthHeader(): void
     {
         $client = $this->client([new MockResponse('{"error":"missing X-Data or X-Auth-Token"}', ['http_code' => 400])], courtsToken: '');
