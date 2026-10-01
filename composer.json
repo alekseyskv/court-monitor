@@ -1,6 +1,6 @@
 {
     "name": "lawmatic/court-monitor",
-    "description": "PHP-клиент сервиса мониторинга судебных дел Lawmatic: каталог судов, парсер и транслятор",
+    "description": "PHP-клиент сервиса мониторинга судебных дел Lawmatic: каталог судов и парсеры дел",
     "type": "library",
     "license": "proprietary",
     "require": {
@@ -27,7 +27,7 @@
     },
     "extra": {
         "branch-alias": {
-            "dev-main": "1.0.x-dev"
+            "dev-main": "2.0.x-dev"
         }
     },
     "config": {

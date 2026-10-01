@@ -55,7 +55,7 @@ interface CourtMonitorClientInterface
     public function getCourtTypes(): array;
 
     /**
-     * По URL сайта суда возвращает {parser_id, court_id, court_id_can_empty}.
+     * По URL сайта суда возвращает {parser_id, court_id, court_id_can_empty, source}.
      *
      * @return array<string, mixed>
      */
@@ -64,14 +64,14 @@ interface CourtMonitorClientInterface
     /**
      * Подсчёт дел и страниц по фильтру поиска (`total_urls`, `total_pages`, ...).
      *
-     * @param array<string, mixed> $params поля поиска (members, reg_date_start,
-     *                                      reg_date_stop, process_type, court_id, ...)
+     * @param array<string, mixed> $params поля поиска (members, date_from,
+     *                                      date_to, process_type, court_id, case_number, inn, ...)
      * @return array<string, mixed>
      */
     public function getTotalCounts(array $params, ?string $parserId = null, ?string $key = null): array;
 
     /**
-     * Краткие карточки дел с одной страницы поиска.
+     * Краткие карточки дел с одной страницы поиска (`url`, `number`, `extra`).
      *
      * @param array<string, mixed> $params поля поиска без `page`
      * @return array<int, array<string, mixed>>
@@ -94,12 +94,13 @@ interface CourtMonitorClientInterface
     public function getCaseUrlsForUid(string $uid, string $courtId, ?string $parserId = null, ?string $key = null): array;
 
     /**
-     * Полные карточки дел по списку прямых URL.
+     * Полные карточки дел по списку прямых URL (каноничный формат парсера:
+     * `case`, `parties`, `events`, `documents`, ...).
      *
      * @param array<int, string> $urls
      * @return array<int, array<string, mixed>>
      */
-    public function getFullCases(array $urls, string $courtId, string $processType = '', ?string $parserId = null, ?string $key = null): array;
+    public function getFullCases(array $urls, string $courtId = '', ?string $parserId = null, ?string $key = null): array;
 
     /**
      * Полная карточка дела по УИД. Код суда берётся из первых 8 символов УИД,

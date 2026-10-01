@@ -20,55 +20,55 @@ use Symfony\Component\HttpClient\Response\MockResponse;
 final class CourtMonitorClientTest extends TestCase
 {
     private const COURTS_URL = 'https://courts.test';
-    private const TRANSLATOR_URL = 'https://translator.test/';
-    private const PARSER_URL = 'https://parser.test/urls';
+    private const PARSER_URL = 'https://parser.test';
 
     /** @var list<array{method: string, url: string, headers: list<string>, raw: string, body: mixed}> */
     private array $requests = [];
 
-    public function testParserRequestSendsEnvelopeWithDefaultParserAndKey(): void
+    public function testSearchSendsFlatBodyWithKeyInHeader(): void
     {
-        $client = $this->client([$this->ok(['total_urls' => 12, 'total_pages' => 2])]);
+        $client = $this->client([$this->search(['total_urls' => 12, 'total_pages' => 2])]);
 
         $counts = $client->getTotalCounts(['members' => 'Иванов', 'court_id' => '77RS0001']);
 
         self::assertSame(['total_urls' => 12, 'total_pages' => 2], $counts);
         self::assertCount(1, $this->requests);
         self::assertSame('POST', $this->requests[0]['method']);
-        self::assertSame(self::PARSER_URL, $this->requests[0]['url']);
+        self::assertSame(self::PARSER_URL . '/v1/urls', $this->requests[0]['url']);
+        self::assertContains('x-api-key: secret', $this->requests[0]['headers']);
         self::assertSame([
-            'params' => ['members' => 'Иванов', 'court_id' => '77RS0001'],
             'parser_id' => 'moscow',
-            'key' => 'secret',
+            'members' => 'Иванов',
+            'court_id' => '77RS0001',
         ], $this->requests[0]['body']);
     }
 
     public function testExplicitParserAndKeyOverrideDefaults(): void
     {
-        $client = $this->client([$this->ok(['urls' => ['https://case/1']])]);
+        $client = $this->client([$this->search(['urls' => ['https://case/1']])]);
 
-        $urls = $client->getCasesUrlsFromPage(3, ['members' => 'Иванов'], 'spb', 'other-key');
+        $urls = $client->getCasesUrlsFromPage(3, ['members' => 'Иванов'], 'spb_magistrate', 'other-key');
 
         self::assertSame(['https://case/1'], $urls);
+        self::assertContains('x-api-key: other-key', $this->requests[0]['headers']);
         self::assertSame([
-            'params' => ['page' => 3, 'members' => 'Иванов'],
-            'parser_id' => 'spb',
-            'key' => 'other-key',
+            'parser_id' => 'spb_magistrate',
+            'page' => 3,
+            'members' => 'Иванов',
         ], $this->requests[0]['body']);
     }
 
-    public function testEmptyParamsAreSentAsJsonObject(): void
+    public function testShortCasesComeFromSearchBlock(): void
     {
-        $client = $this->client([$this->ok([])]);
+        $hit = ['url' => 'https://case/1', 'number' => '2-1/2024', 'extra' => []];
+        $client = $this->client([$this->search(['cases' => [$hit], 'total_urls' => 1])]);
 
-        $client->getTotalCounts([]);
-
-        self::assertStringContainsString('"params":{}', $this->requests[0]['raw']);
+        self::assertSame([$hit], $client->getShortCasesFromPage(1, ['members' => 'Иванов']));
     }
 
-    public function testNullDataBecomesEmptyArray(): void
+    public function testMissingSearchBlockBecomesEmptyArray(): void
     {
-        $client = $this->client([new MockResponse('{"status":"ok","error":null,"data":null}')]);
+        $client = $this->client([new MockResponse('{"status":"ok","search":null}')]);
 
         self::assertSame([], $client->getTotalCounts([]));
     }
@@ -77,20 +77,21 @@ final class CourtMonitorClientTest extends TestCase
     {
         $urls = ['u1', 'u2', '', 'u3', 'u4', 'u5', 'u6', 'u7'];
         $client = $this->client([
-            new MockResponse('{"cases":[{"n":1},{"n":2}]}'),
-            new MockResponse('{"cases":[{"n":3}]}'),
+            $this->cases([['url' => 'u1'], ['url' => 'u2']]),
+            $this->cases([['url' => 'u6']]),
         ]);
 
-        $cases = $client->getFullCases($urls, '77RS0001', 'civil');
+        $cases = $client->getFullCases($urls, 'tverskoy--mos');
 
-        self::assertSame([['n' => 1], ['n' => 2], ['n' => 3]], $cases);
+        self::assertSame([['url' => 'u1'], ['url' => 'u2'], ['url' => 'u6']], $cases);
         self::assertCount(2, $this->requests);
-        self::assertSame(self::TRANSLATOR_URL, $this->requests[0]['url']);
+        self::assertSame(self::PARSER_URL . '/v1/parse', $this->requests[0]['url']);
+        self::assertContains('x-api-key: secret', $this->requests[0]['headers']);
         self::assertSame(
-            ['court_id' => '77RS0001', 'process_type' => 'civil', 'urls' => ['u1', 'u2', 'u3', 'u4', 'u5']],
-            $this->requests[0]['body']['params'],
+            ['parser_id' => 'moscow', 'court_id' => 'tverskoy--mos', 'urls' => ['u1', 'u2', 'u3', 'u4', 'u5']],
+            $this->requests[0]['body'],
         );
-        self::assertSame(['u6', 'u7'], $this->requests[1]['body']['params']['urls']);
+        self::assertSame(['u6', 'u7'], $this->requests[1]['body']['urls']);
     }
 
     public function testFullCasesWithoutUrlsDoNotCallService(): void
@@ -104,30 +105,31 @@ final class CourtMonitorClientTest extends TestCase
     public function testFullCaseForUidTakesCourtCodeFromUid(): void
     {
         $client = $this->client([
-            $this->ok(['urls' => ['https://case/1']]),
-            new MockResponse('{"cases":[{"n":1}]}'),
+            $this->search(['urls' => ['https://case/1']]),
+            $this->cases([['url' => 'https://case/1']]),
         ]);
 
         $cases = $client->getFullCaseForUid('77RS0021-02-2026-011276-09');
 
-        self::assertSame([['n' => 1]], $cases);
-        self::assertSame(self::PARSER_URL, $this->requests[0]['url']);
+        self::assertSame([['url' => 'https://case/1']], $cases);
+        self::assertSame(self::PARSER_URL . '/v1/urls', $this->requests[0]['url']);
         self::assertSame([
+            'parser_id' => 'moscow',
             'court_id' => '77RS0021',
-            'process_type' => '',
             'unique_number' => '77RS0021-02-2026-011276-09',
-        ], $this->requests[0]['body']['params']);
-        self::assertSame(self::TRANSLATOR_URL, $this->requests[1]['url']);
-        self::assertSame('77RS0021', $this->requests[1]['body']['params']['court_id']);
+        ], $this->requests[0]['body']);
+        self::assertSame(self::PARSER_URL . '/v1/parse', $this->requests[1]['url']);
+        self::assertSame('77RS0021', $this->requests[1]['body']['court_id']);
+        self::assertSame(['https://case/1'], $this->requests[1]['body']['urls']);
     }
 
-    public function testFullCaseForUidStopsWhenParserFoundNothing(): void
+    public function testFullCaseForUidStopsWhenSearchFoundNothing(): void
     {
-        $client = $this->client([$this->ok(['urls' => []])]);
+        $client = $this->client([$this->search(['urls' => []])]);
 
         self::assertSame([], $client->getFullCaseForUid('77RS0021-02-2026-011276-09', '77RS9999'));
         self::assertCount(1, $this->requests);
-        self::assertSame('77RS9999', $this->requests[0]['body']['params']['court_id']);
+        self::assertSame('77RS9999', $this->requests[0]['body']['court_id']);
     }
 
     public function testCourtSearchByCodeAsksCatalogWithToken(): void
@@ -215,14 +217,40 @@ final class CourtMonitorClientTest extends TestCase
         self::assertSame([], preg_grep('/^x-auth-token:/i', $this->requests[0]['headers']));
     }
 
-    public function testParserForCourtUrlIsAskedWithoutEnvelope(): void
+    public function testParserForCourtUrlAsksResolveWithoutKey(): void
     {
-        $client = $this->client([new MockResponse('{"parser_id":"mos","court_id":"77RS0001"}')]);
+        $client = $this->client([new MockResponse('{"parser_id":"moscow","court_id":"presnenskij","court_id_can_empty":true,"source":"mos-gorsud"}')]);
 
-        $info = $client->getParserFor('https://mos-gorsud.ru');
+        $info = $client->getParserFor('https://mos-gorsud.ru/rs/presnenskij');
 
-        self::assertSame(['parser_id' => 'mos', 'court_id' => '77RS0001'], $info);
-        self::assertSame(['court_url' => 'https://mos-gorsud.ru'], $this->requests[0]['body']);
+        self::assertSame('moscow', $info['parser_id']);
+        self::assertSame('presnenskij', $info['court_id']);
+        self::assertSame(self::PARSER_URL . '/v1/resolve', $this->requests[0]['url']);
+        self::assertSame(['url' => 'https://mos-gorsud.ru/rs/presnenskij'], $this->requests[0]['body']);
+        self::assertSame([], preg_grep('/^x-api-key:/i', $this->requests[0]['headers']));
+    }
+
+    public function testHttp401IsInvalidKey(): void
+    {
+        $client = $this->client([new MockResponse('{"detail":"Неверный ключ"}', ['http_code' => 401])]);
+
+        try {
+            $client->getTotalCounts([]);
+            self::fail('Ожидалась ошибка ключа');
+        } catch (CourtMonitorInvalidKeyException $e) {
+            self::assertSame(401, $e->getCode());
+            self::assertStringStartsWith('CourtMonitor request to ' . self::PARSER_URL . '/v1/urls failed:', $e->getMessage());
+            self::assertInstanceOf(CourtMonitorTransportException::class, $e->getPrevious());
+        }
+    }
+
+    public function testHttp401OnFullCasesIsInvalidKey(): void
+    {
+        $client = $this->client([new MockResponse('{"detail":"Неверный ключ"}', ['http_code' => 401])]);
+
+        $this->expectException(CourtMonitorInvalidKeyException::class);
+
+        $client->getFullCases(['u1'], '77RS0001');
     }
 
     /**
@@ -245,6 +273,7 @@ final class CourtMonitorClientTest extends TestCase
      */
     public static function invalidKeyErrors(): iterable
     {
+        yield 'неверный ключ' => ['Неверный ключ'];
         yield 'invalid key' => ['Invalid key'];
         yield 'unauthorized' => ['Unauthorized'];
         yield 'incorrect key' => ['Incorrect key'];
@@ -265,7 +294,7 @@ final class CourtMonitorClientTest extends TestCase
 
     public function testEnvelopeWithoutErrorTextIsUnknownError(): void
     {
-        $client = $this->client([new MockResponse('{"status":"error","data":null}')]);
+        $client = $this->client([new MockResponse('{"status":"error"}')]);
 
         $this->expectException(CourtMonitorApiErrorException::class);
         $this->expectExceptionMessage('CourtMonitor API error: unknown error');
@@ -273,29 +302,15 @@ final class CourtMonitorClientTest extends TestCase
         $client->getTotalCounts([]);
     }
 
-    public function testHttp400OnFullCardsIsInvalidKey(): void
+    public function testValidationErrorIsTransportError(): void
     {
-        $client = $this->client([new MockResponse('', ['http_code' => 400])]);
-
-        try {
-            $client->getFullCases(['u1'], '77RS0001');
-            self::fail('Ожидалась ошибка ключа');
-        } catch (CourtMonitorInvalidKeyException $e) {
-            self::assertSame(400, $e->getCode());
-            self::assertStringStartsWith('CourtMonitor request to ' . self::TRANSLATOR_URL . ' failed:', $e->getMessage());
-            self::assertInstanceOf(CourtMonitorTransportException::class, $e->getPrevious());
-        }
-    }
-
-    public function testHttp400OnParserIsTransportError(): void
-    {
-        $client = $this->client([new MockResponse('', ['http_code' => 400])]);
+        $client = $this->client([new MockResponse('{"detail":[{"loc":["body","parser_id"],"msg":"Field required"}]}', ['http_code' => 422])]);
 
         try {
             $client->getTotalCounts([]);
             self::fail('Ожидалась транспортная ошибка');
         } catch (CourtMonitorTransportException $e) {
-            self::assertSame(400, $e->getCode());
+            self::assertSame(422, $e->getCode());
         }
     }
 
@@ -311,7 +326,7 @@ final class CourtMonitorClientTest extends TestCase
             self::fail('Ожидалась транспортная ошибка');
         } catch (CourtMonitorTransportException $e) {
             self::assertSame(0, $e->getCode());
-            self::assertStringStartsWith('CourtMonitor request to ' . self::PARSER_URL . ' failed:', $e->getMessage());
+            self::assertStringStartsWith('CourtMonitor request to ' . self::PARSER_URL . '/v1/urls failed:', $e->getMessage());
         }
     }
 
@@ -324,23 +339,9 @@ final class CourtMonitorClientTest extends TestCase
         yield 'битый JSON' => [new MockResponse('{oops')];
     }
 
-    public function testParserRejectsKeyWithHttp400Envelope(): void
+    public function testHttpErrorWithEnvelopeIsApiError(): void
     {
-        $client = $this->client([new MockResponse('{"error":"Incorrect key","status":"error"}', ['http_code' => 400])]);
-
-        try {
-            $client->getTotalCounts(['court_id' => 'mgs']);
-            self::fail('Ожидалась ошибка ключа');
-        } catch (CourtMonitorInvalidKeyException $e) {
-            self::assertSame('CourtMonitor API error: Incorrect key', $e->getMessage());
-            self::assertSame(400, $e->getCode());
-            self::assertInstanceOf(CourtMonitorTransportException::class, $e->getPrevious());
-        }
-    }
-
-    public function testOtherHttpErrorEnvelopeIsApiError(): void
-    {
-        $client = $this->client([new MockResponse('{"error":"Parser is busy","status":"error"}', ['http_code' => 503])]);
+        $client = $this->client([new MockResponse('{"status":"error","error":"Parser is busy"}', ['http_code' => 503])]);
 
         try {
             $client->getTotalCounts([]);
@@ -351,17 +352,31 @@ final class CourtMonitorClientTest extends TestCase
         }
     }
 
-    public function testCheckKeyAsksParser(): void
+    public function testHttpErrorWithoutEnvelopeIsTransportError(): void
     {
-        self::assertTrue($this->client([$this->ok([])])->checkKey('good'));
-        self::assertSame(self::PARSER_URL, $this->requests[0]['url']);
-        self::assertSame(['court_id' => ''], $this->requests[0]['body']['params']);
-        self::assertSame('good', $this->requests[0]['body']['key']);
+        $client = $this->client([new MockResponse('Bad gateway', ['http_code' => 502])]);
+
+        try {
+            $client->getTotalCounts([]);
+            self::fail('Ожидалась транспортная ошибка');
+        } catch (CourtMonitorTransportException $e) {
+            self::assertSame(502, $e->getCode());
+        }
+    }
+
+    public function testCheckKeyAsksKeyCheckEndpoint(): void
+    {
+        $client = $this->client([new MockResponse('{"status":"ok","auth_required":true}')]);
+
+        self::assertTrue($client->checkKey('good'));
+        self::assertSame('GET', $this->requests[0]['method']);
+        self::assertSame(self::PARSER_URL . '/v1/key/check', $this->requests[0]['url']);
+        self::assertContains('x-api-key: good', $this->requests[0]['headers']);
     }
 
     public function testCheckKeyReturnsFalseWhenKeyRejected(): void
     {
-        $rejected = new MockResponse('{"error":"Incorrect key","status":"error"}', ['http_code' => 400]);
+        $rejected = new MockResponse('{"detail":"Неверный ключ"}', ['http_code' => 401]);
 
         self::assertFalse($this->client([$rejected])->checkKey('bad'));
     }
@@ -409,18 +424,28 @@ final class CourtMonitorClientTest extends TestCase
             'moscow',
             $courtsToken,
             self::COURTS_URL,
-            self::TRANSLATOR_URL,
             self::PARSER_URL,
         );
     }
 
     /**
-     * @param array<string, mixed> $data
+     * @param array<string, mixed> $search
      */
-    private function ok(array $data): MockResponse
+    private function search(array $search): MockResponse
     {
         return new MockResponse(json_encode(
-            ['status' => 'ok', 'error' => null, 'data' => $data],
+            ['status' => 'ok', 'request_id' => 'r1', 'cases' => [], 'search' => $search, 'error' => null],
+            JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR,
+        ));
+    }
+
+    /**
+     * @param list<array<string, mixed>> $cases
+     */
+    private function cases(array $cases): MockResponse
+    {
+        return new MockResponse(json_encode(
+            ['status' => 'ok', 'request_id' => 'r1', 'cases' => $cases, 'search' => null, 'error' => null],
             JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR,
         ));
     }
@@ -428,7 +453,7 @@ final class CourtMonitorClientTest extends TestCase
     private function error(string $error): MockResponse
     {
         return new MockResponse(json_encode(
-            ['status' => 'error', 'error' => $error, 'data' => null],
+            ['status' => 'error', 'error' => $error],
             JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR,
         ));
     }

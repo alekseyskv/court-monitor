@@ -14,16 +14,17 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
 /**
  * Клиент внешнего API мониторинга судебных дел (CourtMonitor).
  *
- * Покрывает три внешних поверхности (полный справочник — README.md рядом):
- *  - каталог судов        POST https://courts.lawmatic.ru/api/v1/courts/search
- *  - определение парсера   POST https://translator.lawmatic.ru/
- *  - парсер дел (URL/счёт) POST https://parsers.lawmatic.ru/api/v1/urls
- *  - полные карточки дел   POST https://translator.lawmatic.ru/
+ * Покрывает две внешних поверхности (полный справочник — README.md рядом):
+ *  - каталог судов  POST https://courts.lawmatic.ru/api/v1/courts/search
+ *  - парсеры дел    https://prsr.lawmatic.ru:
+ *      POST /v1/resolve — парсер и код суда по URL сайта суда
+ *      POST /v1/urls    — поиск дел (URL, краткие карточки, подсчёт)
+ *      POST /v1/parse   — полные карточки дел по URL
  *
- * Запросы к парсеру/транслятору идут конвертом
- *   {"params": {...}, "parser_id": "...", "key": "..."}
- * и отвечают конвертом {"status","error","data"} — метод {@see unwrap()}
- * разворачивает его и кидает {@see CourtMonitorException} при status=error.
+ * Парсер принимает ключ в заголовке `x-api-key`, плоское JSON-тело и отвечает
+ * конвертом {"status","request_id","parser_id","court_id","cases","search","error"} —
+ * метод {@see envelope()} разбирает его и кидает {@see CourtMonitorException}
+ * при status=error. Неверный ключ — HTTP 401.
  *
  * Пакет не знает о приложении и о DI-контейнере: без атрибутов фреймворка,
  * всё нужное приходит через конструктор.
@@ -34,11 +35,10 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
  */
 class CourtMonitorClient implements CourtMonitorClientInterface
 {
-    public const DEFAULT_COURTS_URL     = 'https://courts.lawmatic.ru';
-    public const DEFAULT_TRANSLATOR_URL = 'https://translator.lawmatic.ru/';
-    public const DEFAULT_PARSER_URL     = 'https://parsers.lawmatic.ru/api/v1/urls';
+    public const DEFAULT_COURTS_URL = 'https://courts.lawmatic.ru';
+    public const DEFAULT_PARSER_URL = 'https://prsr.lawmatic.ru';
 
-    /** В коде парсера пакет полных карточек ограничен 5 URL за запрос. */
+    /** Сколько URL дел отправлять в парсер за один запрос полных карточек. */
     private const FULL_CASES_BATCH = 5;
 
     /** Сколько судов отдавать из поиска по каталогу. */
@@ -47,6 +47,7 @@ class CourtMonitorClient implements CourtMonitorClientInterface
     /**
      * @param string $defaultParserId парсер, если вызывающий код не передал свой
      * @param string $courtsToken     токен каталога судов (заголовок X-Auth-Token)
+     * @param string $parserUrl       корень сервиса парсеров
      */
     public function __construct(
         private readonly HttpClientInterface $httpClient,
@@ -54,7 +55,6 @@ class CourtMonitorClient implements CourtMonitorClientInterface
         private readonly string $defaultParserId,
         private readonly string $courtsToken = '',
         private readonly string $courtsUrl = self::DEFAULT_COURTS_URL,
-        private readonly string $translatorUrl = self::DEFAULT_TRANSLATOR_URL,
         private readonly string $parserUrl = self::DEFAULT_PARSER_URL,
         private readonly ?LoggerInterface $logger = null,
     ) {
@@ -153,62 +153,63 @@ class CourtMonitorClient implements CourtMonitorClientInterface
     }
 
     // ---------------------------------------------------------------------
-    // 2. Определение парсера по URL суда — translator.lawmatic.ru
+    // 2. Определение парсера по URL суда — prsr.lawmatic.ru/v1/resolve
     // ---------------------------------------------------------------------
 
     /**
-     * По URL сайта суда возвращает {parser_id, court_id, court_id_can_empty}.
+     * По URL сайта суда возвращает {parser_id, court_id, court_id_can_empty, source}.
+     * Ключ не нужен.
      *
      * @return array<string, mixed>
      */
     public function getParserFor(string $courtUrl): array
     {
-        return $this->json('POST', $this->translatorUrl, [
-            'json' => ['court_url' => $courtUrl],
+        return $this->json('POST', $this->parserEndpoint('/v1/resolve'), [
+            'json' => ['url' => $courtUrl],
         ]);
     }
 
     // ---------------------------------------------------------------------
-    // 3. Парсер дел — parsers.lawmatic.ru/api/v1/urls
+    // 3. Поиск дел — prsr.lawmatic.ru/v1/urls
     // ---------------------------------------------------------------------
 
     /**
-     * Подсчёт дел и страниц по фильтру поиска. Возвращает `data`
-     * (`total_urls`, `total_pages`, `total_captcha`, ...).
+     * Подсчёт дел и страниц по фильтру поиска. Возвращает блок `search`
+     * (`total_urls`, `total_pages`, `total_captcha`, `page`, ...).
      *
-     * @param array<string, mixed> $params поля поиска (members, reg_date_start,
-     *                                      reg_date_stop, process_type, court_id, ...)
+     * @param array<string, mixed> $params поля поиска (members, date_from, date_to,
+     *                                      process_type, court_id, case_number, inn, ...)
      * @return array<string, mixed>
      */
     public function getTotalCounts(array $params, ?string $parserId = null, ?string $key = null): array
     {
-        return $this->parserRequest($this->parserUrl, $params, $parserId, $key);
+        return $this->search($params, $parserId, $key);
     }
 
     /**
-     * Краткие карточки дел с одной страницы (`data.cases`).
+     * Краткие карточки дел с одной страницы (`search.cases`: `url`, `number`, `extra`).
      *
      * @param array<string, mixed> $params поля поиска без `page`
      * @return array<int, array<string, mixed>>
      */
     public function getShortCasesFromPage(int $page, array $params, ?string $parserId = null, ?string $key = null): array
     {
-        $data = $this->parserRequest($this->parserUrl, ['page' => $page] + $params, $parserId, $key);
+        $search = $this->search(['page' => $page] + $params, $parserId, $key);
 
-        return is_array($data['cases'] ?? null) ? $data['cases'] : [];
+        return is_array($search['cases'] ?? null) ? $search['cases'] : [];
     }
 
     /**
-     * Список URL дел с одной страницы (`data.urls`).
+     * Список URL дел с одной страницы (`search.urls`).
      *
      * @param array<string, mixed> $params поля поиска без `page`
      * @return array<int, string>
      */
     public function getCasesUrlsFromPage(int $page, array $params, ?string $parserId = null, ?string $key = null): array
     {
-        $data = $this->parserRequest($this->parserUrl, ['page' => $page] + $params, $parserId, $key);
+        $search = $this->search(['page' => $page] + $params, $parserId, $key);
 
-        return is_array($data['urls'] ?? null) ? $data['urls'] : [];
+        return is_array($search['urls'] ?? null) ? $search['urls'] : [];
     }
 
     /**
@@ -218,17 +219,16 @@ class CourtMonitorClient implements CourtMonitorClientInterface
      */
     public function getCaseUrlsForUid(string $uid, string $courtId, ?string $parserId = null, ?string $key = null): array
     {
-        $data = $this->parserRequest($this->parserUrl, [
+        $search = $this->search([
             'court_id'      => $courtId,
-            'process_type'  => '',
             'unique_number' => $uid,
         ], $parserId, $key);
 
-        return is_array($data['urls'] ?? null) ? $data['urls'] : [];
+        return is_array($search['urls'] ?? null) ? $search['urls'] : [];
     }
 
     // ---------------------------------------------------------------------
-    // 4. Полные карточки дел — translator.lawmatic.ru
+    // 4. Полные карточки дел — prsr.lawmatic.ru/v1/parse
     // ---------------------------------------------------------------------
 
     /**
@@ -236,9 +236,10 @@ class CourtMonitorClient implements CourtMonitorClientInterface
      * пачки по {@see FULL_CASES_BATCH}; результаты склеиваются.
      *
      * @param array<int, string> $urls
-     * @return array<int, array<string, mixed>> элементы `cases` из всех пачек
+     * @return array<int, array<string, mixed>> каноничные карточки (`case`, `parties`,
+     *                                          `events`, `documents`, ...) из всех пачек
      */
-    public function getFullCases(array $urls, string $courtId, string $processType = '', ?string $parserId = null, ?string $key = null): array
+    public function getFullCases(array $urls, string $courtId = '', ?string $parserId = null, ?string $key = null): array
     {
         $urls = array_values(array_filter($urls, static fn($u) => is_string($u) && $u !== ''));
         if ($urls === []) {
@@ -247,11 +248,10 @@ class CourtMonitorClient implements CourtMonitorClientInterface
 
         $cases = [];
         foreach (array_chunk($urls, self::FULL_CASES_BATCH) as $chunk) {
-            $response = $this->postEnvelope($this->translatorUrl, [
-                'court_id'     => $courtId,
-                'process_type' => $processType,
-                'urls'         => $chunk,
-            ], $parserId, $key, fullCardResponse: true);
+            $response = $this->envelope('/v1/parse', [
+                'court_id' => $courtId,
+                'urls'     => $chunk,
+            ], $parserId, $key);
 
             if (is_array($response['cases'] ?? null)) {
                 array_push($cases, ...$response['cases']);
@@ -262,9 +262,9 @@ class CourtMonitorClient implements CourtMonitorClientInterface
     }
 
     /**
-     * Полная карточка дела по УИД: сперва получает URL через парсер, затем
-     * тянет карточку через транслятор. Код суда берётся из первых 8 символов
-     * УИД, если `court_id` не передан явно.
+     * Полная карточка дела по УИД: сперва получает URL через поиск, затем
+     * тянет карточку. Код суда берётся из первых 8 символов УИД,
+     * если `court_id` не передан явно.
      *
      * @return array<int, array<string, mixed>>
      */
@@ -277,19 +277,17 @@ class CourtMonitorClient implements CourtMonitorClientInterface
             return [];
         }
 
-        return $this->getFullCases($urls, $courtId, '', $parserId, $key);
+        return $this->getFullCases($urls, $courtId, $parserId, $key);
     }
 
     // ---------------------------------------------------------------------
-    // 5. Проверка ключа парсера — parsers.lawmatic.ru
+    // 5. Проверка ключа парсера
     // ---------------------------------------------------------------------
 
     /**
      * Проверяет валидность ключа парсера. Без аргумента — ключ, заданный при создании клиента.
      *
-     * Ключ проверяет только парсер: транслятор на пустой запрос отвечает
-     * ошибкой параметров при любом ключе. Пустой поиск парсер отрабатывает
-     * сразу, не обходя сайты судов.
+     * Запрос GET /v1/key/check: сайты судов он не дёргает. Неверный ключ — HTTP 401.
      *
      * @throws CourtMonitorException если сервис недоступен или ответил другой ошибкой —
      *                               тогда о ключе ничего не известно
@@ -297,11 +295,17 @@ class CourtMonitorClient implements CourtMonitorClientInterface
     public function checkKey(?string $key = null, ?string $parserId = null): bool
     {
         try {
-            $this->postEnvelope($this->parserUrl, ['court_id' => ''], $parserId, $key);
+            $this->json('GET', $this->parserEndpoint('/v1/key/check'), [
+                'headers' => ['x-api-key' => $key ?? $this->key],
+            ]);
 
             return true;
-        } catch (CourtMonitorInvalidKeyException) {
-            return false;
+        } catch (CourtMonitorTransportException $e) {
+            if ($e->getCode() === 401) {
+                return false;
+            }
+
+            throw $e;
         }
     }
 
@@ -310,78 +314,60 @@ class CourtMonitorClient implements CourtMonitorClientInterface
     // ---------------------------------------------------------------------
 
     /**
-     * Запрос к парсеру/транслятору конвертом {params, parser_id, key} с разбором
-     * ответа {status, error, data}. Возвращает содержимое `data`.
+     * POST /v1/urls: возвращает блок `search` конверта (пустой массив, если его нет).
      *
      * @param array<string, mixed> $params
      * @return array<string, mixed>
      */
-    private function parserRequest(string $url, array $params, ?string $parserId, ?string $key): array
+    private function search(array $params, ?string $parserId, ?string $key): array
     {
-        return $this->postEnvelope($url, $params, $parserId, $key);
+        $response = $this->envelope('/v1/urls', $params, $parserId, $key);
+
+        return is_array($response['search'] ?? null) ? $response['search'] : [];
+    }
+
+    private function parserEndpoint(string $path): string
+    {
+        return rtrim($this->parserUrl, '/') . $path;
     }
 
     /**
-     * POST конвертом {params, parser_id, key}.
+     * POST плоским телом {parser_id, ...params} с ключом в заголовке `x-api-key`.
+     * Разбирает конверт ответа и возвращает его целиком; при status!=ok кидает
+     * {@see CourtMonitorInvalidKeyException} на отказ в ключе и
+     * {@see CourtMonitorApiErrorException} на остальное.
      *
      * @param array<string, mixed> $params
-     * @param bool $fullCardResponse у транслятора полные карточки лежат прямо в
-     *                               корне (`{"cases":[...]}`) — без обёртки
-     *                               {status, error, data}; HTTP 400 = неверный ключ.
      * @return array<string, mixed>
      */
-    private function postEnvelope(string $url, array $params, ?string $parserId, ?string $key, bool $fullCardResponse = false): array
+    private function envelope(string $path, array $params, ?string $parserId, ?string $key): array
     {
-        $body = [
-            'params'    => (object) $params,
-            'parser_id' => $parserId ?? $this->defaultParserId,
-            'key'       => $key ?? $this->key,
-        ];
-
-        if ($fullCardResponse) {
-            // Транслятор отдаёт {"cases":[...]} напрямую; 400 трактуем как неверный ключ.
-            try {
-                return $this->json('POST', $url, ['json' => $body]);
-            } catch (CourtMonitorTransportException $e) {
-                if ($e->getCode() === 400) {
-                    throw new CourtMonitorInvalidKeyException($e->getMessage(), 400, $e);
-                }
-
-                throw $e;
-            }
-        }
-
         try {
-            return $this->unwrap($this->json('POST', $url, ['json' => $body]));
+            $response = $this->json('POST', $this->parserEndpoint($path), [
+                'headers' => ['x-api-key' => $key ?? $this->key],
+                'json'    => ['parser_id' => $parserId ?? $this->defaultParserId] + $params,
+            ]);
         } catch (CourtMonitorTransportException $e) {
-            // Парсер отвечает на неверный ключ HTTP 400 с конвертом
-            // {"status":"error","error":"Incorrect key"} — разбираем его, чтобы
-            // вызывающий код получил тот же вид ошибки, что и при HTTP 200.
-            $envelope = $this->errorEnvelope($e);
-            if ($envelope !== null) {
-                throw $this->envelopeError($envelope, $e->getCode(), $e);
+            // Неверный ключ — HTTP 401 {"detail":"Неверный ключ"}.
+            if ($e->getCode() === 401) {
+                throw new CourtMonitorInvalidKeyException($e->getMessage(), 401, $e);
+            }
+
+            // Не-2xx ответ мог нести конверт {"status":"error","error":"..."} —
+            // отдаём тот же вид ошибки, что и при HTTP 200.
+            $body = $this->errorBody($e);
+            if (($body['status'] ?? null) === 'error') {
+                throw $this->envelopeError($body, $e->getCode(), $e);
             }
 
             throw $e;
         }
-    }
 
-    /**
-     * Разворачивает конверт {status, error, data}: при status!=ok кидает
-     * {@see CourtMonitorInvalidKeyException} на отказ в ключе и
-     * {@see CourtMonitorApiErrorException} на остальное, иначе возвращает
-     * `data` (или [] для null).
-     *
-     * @param array<string, mixed> $response
-     * @return array<string, mixed>
-     */
-    private function unwrap(array $response): array
-    {
         if (($response['status'] ?? null) !== 'ok') {
             throw $this->envelopeError($response);
         }
 
-        return is_array($response['data'] ?? null) ? $response['data'] : [];
+        return $response;
     }
 
     /**
@@ -394,9 +380,7 @@ class CourtMonitorClient implements CourtMonitorClientInterface
     {
         $error = is_string($response['error'] ?? null) ? $response['error'] : 'unknown error';
 
-        // Тексты отказа в ключе: «Incorrect key» — фактический ответ парсера,
-        // «Invalid key» и «Unauthorized» — из README.md (§3.1, §5).
-        if (preg_match('/^\s*(incorrect key|invalid key|unauthorized)\s*$/i', $error) === 1) {
+        if (preg_match('/^\s*(incorrect key|invalid key|unauthorized|неверный ключ)\s*$/iu', $error) === 1) {
             return new CourtMonitorInvalidKeyException('CourtMonitor API error: ' . $error, $code, $previous);
         }
 
@@ -404,11 +388,11 @@ class CourtMonitorClient implements CourtMonitorClientInterface
     }
 
     /**
-     * Конверт {status: error} из тела не-2xx ответа, если он там есть.
+     * Тело не-2xx ответа, если оно разбирается как JSON-объект.
      *
      * @return array<string, mixed>|null
      */
-    private function errorEnvelope(CourtMonitorTransportException $e): ?array
+    private function errorBody(CourtMonitorTransportException $e): ?array
     {
         $previous = $e->getPrevious();
         if (!$previous instanceof HttpExceptionInterface) {
@@ -421,7 +405,7 @@ class CourtMonitorClient implements CourtMonitorClientInterface
             return null;
         }
 
-        return is_array($body) && ($body['status'] ?? null) === 'error' ? $body : null;
+        return is_array($body) ? $body : null;
     }
 
     /**

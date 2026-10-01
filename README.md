@@ -1,8 +1,7 @@
 # CourtMonitor — клиент и справочник API
 
 Composer-пакет `lawmatic/court-monitor`: PHP-клиент внешнего сервиса мониторинга
-судебных дел — каталог судов (`courts.lawmatic.ru`), парсер (`parsers.lawmatic.ru`)
-и транслятор (`translator.lawmatic.ru`).
+судебных дел — каталог судов (`courts.lawmatic.ru`) и парсеры дел (`prsr.lawmatic.ru`).
 
 ## Установка
 
@@ -23,7 +22,7 @@ $client = new CourtMonitorClient(
     $key,               // ключ парсера
     'moscow',           // парсер, если вызывающий код не передал свой
     $courtsToken,       // токен каталога судов (X-Auth-Token); без него §1 не работает
-    // адреса сервисов — необязательно, по умолчанию боевые (§8)
+    // адреса сервисов ($courtsUrl, $parserUrl) — необязательно, по умолчанию боевые (§8)
     logger: $logger,    // Psr\Log\LoggerInterface, необязательно
 );
 ```
@@ -36,12 +35,12 @@ $client = new CourtMonitorClient(
 | `searchCourts` | Постраничный поиск с любыми фильтрами: `{items, total, limit, offset}` | §1.1 |
 | `getCourtDetail` | Карточка суда с иерархией | §1.3 |
 | `getCourtTypes` | Типы судов `{code, name, kbk}` | §1.4 |
-| `getParserFor` | `parser_id` и `court_id` по URL сайта суда | §2 |
+| `getParserFor` | `parser_id` и `court_id` по URL сайта суда (без ключа) | §2 |
 | `getTotalCounts` | Сколько дел и страниц найдёт поиск | §3.1 |
 | `getShortCasesFromPage` | Краткие карточки с одной страницы | §3.2 |
 | `getCasesUrlsFromPage` | URL дел с одной страницы | §3.3 |
 | `getCaseUrlsForUid` | URL дела по УИД | §3.4 |
-| `getFullCases` | Полные карточки по URL, пачками по 5 | §4 |
+| `getFullCases` | Полные карточки по URL (каноничный формат), пачками по 5 | §4 |
 | `getFullCaseForUid` | §3.4 + §4 одним вызовом; код суда — первые 8 символов УИД | §6.3 |
 | `checkKey` | Проверка ключа парсера | §5 |
 
@@ -55,10 +54,10 @@ $client = new CourtMonitorClient(
 - `CourtMonitorTransportException` — разборчивого ответа нет: сеть, таймаут,
   не-2xx HTTP-код, битый JSON. Код исключения — HTTP-статус (0 — ответа не было);
 - `CourtMonitorApiErrorException` — сервис ответил конвертом
-  `{"status":"error"}`, текст — в `getApiError()`;
-- `CourtMonitorInvalidKeyException` — сервис отверг ключ: ошибка `Incorrect key` /
-  `Invalid key` / `Unauthorized` в конверте (в том числе пришедшем с HTTP 400)
-  или HTTP 400 без конверта на полные карточки (§4.3).
+  `{"status":"error","error":"…"}`, текст — в `getApiError()`;
+- `CourtMonitorInvalidKeyException` — сервис отверг ключ: HTTP 401
+  `{"detail":"Неверный ключ"}` (§3.1) или конверт с ошибкой `Неверный ключ` /
+  `Incorrect key` / `Invalid key` / `Unauthorized`.
 
 Текст сообщения — часть контракта, его префиксы менять нельзя: транспортные
 ошибки начинаются с `CourtMonitor request to <url> failed:`, ошибки сервиса —
@@ -200,566 +199,171 @@ curl -sS "https://courts.lawmatic.ru/api/v1/court-types" \
 
 ## 2. Определение парсера по URL суда
 
-**Endpoint:** `POST https://translator.lawmatic.ru/`  
+**Endpoint:** `POST https://prsr.lawmatic.ru/v1/resolve` (ключ не нужен)  
 **Метод клиента:** `getParserFor`
 
 ```bash
-curl -sS -X POST "https://translator.lawmatic.ru/" \
+curl -sS -X POST "https://prsr.lawmatic.ru/v1/resolve" \
   -H "Content-Type: application/json; charset=utf-8" \
-  -d "{\"court_url\":\"${COURT_URL}\"}"
-```
-
-Читаемый вариант (файл `body-check-parser.json`):
-
-```json
-{
-  "court_url": "https://tverskoy--mos.sudrf.ru"
-}
-```
-
-```bash
-curl -sS -X POST "https://translator.lawmatic.ru/" \
-  -H "Content-Type: application/json; charset=utf-8" \
-  -d @body-check-parser.json
+  -d "{\"url\":\"${COURT_URL}\"}"
 ```
 
 **Пример ответа:**
 
 ```json
 {
-  "parser_id": "moscow",
-  "court_id": "77RS0001",
-  "court_id_can_empty": 0
+  "parser_id": "federal",
+  "court_id": "tverskoy--mos",
+  "court_id_can_empty": false,
+  "source": "sudrf"
 }
 ```
 
+Список парсеров — `GET https://prsr.lawmatic.ru/v1/parsers` (без ключа): `cassation`,
+`federal`, `federal_magistrate`, `kad`, `moscow`, `moscow_magistrate`,
+`spb_magistrate`, `tatarstan_magistrate`, `vsrf`.
+
 ---
 
-## 3. Парсер дел — `POST https://parsers.lawmatic.ru/api/v1/urls`
+## 3. Поиск дел — `POST https://prsr.lawmatic.ru/v1/urls`
 
-Общие заголовки для всех запросов раздела:
+Ключ — в заголовке `x-api-key` (клиент шлёт его так). Тело — плоский JSON:
+`parser_id` обязателен, остальные поля — по §7. Заголовок для всех запросов:
 
 ```bash
--H "Content-Type: application/json; charset=utf-8"
+-H "Content-Type: application/json; charset=utf-8" -H "x-api-key: ${PARSER_KEY}"
 ```
 
-Общая обёртка тела:
+Ответ — конверт:
 
 ```json
 {
-  "params": { },
+  "status": "ok",
+  "request_id": "…",
   "parser_id": "moscow",
-  "key": "ваш_api_ключ"
+  "court_id": "77RS0001",
+  "cases": [],
+  "search": {
+    "urls": [],
+    "cases": [],
+    "total_urls": 42,
+    "total_pages": 5,
+    "page": 1,
+    "total_captcha": 0
+  },
+  "error": null
 }
 ```
 
----
+Клиент возвращает содержимое `search`. `status: "error"` — `CourtMonitorApiErrorException`
+с текстом из `error`.
 
 ### 3.1. Подсчёт дел и страниц
 
-**Метод клиента:** `getTotalCounts`
+**Метод клиента:** `getTotalCounts` — возвращает весь блок `search`.
 
-Сохраните тело в `body-count.json`:
-
-```json
-{
-  "params": {
-    "members": "Иванов Иван Иванович",
-    "reg_date_start": "01.01.2024",
-    "reg_date_stop": "31.12.2024",
-    "process_type": "гражданское",
+```bash
+curl -sS -X POST "https://prsr.lawmatic.ru/v1/urls" \
+  -H "Content-Type: application/json; charset=utf-8" \
+  -H "x-api-key: ${PARSER_KEY}" \
+  -d '{
+    "parser_id": "moscow",
     "court_id": "77RS0001",
-    "unique_number": ""
-  },
-  "parser_id": "moscow",
-  "key": "ваш_api_ключ"
-}
+    "members": "Иванов Иван Иванович",
+    "date_from": "01.01.2024",
+    "date_to": "31.12.2024",
+    "process_type": "гражданское"
+  }'
 ```
 
-```bash
-curl -sS -X POST "https://parsers.lawmatic.ru/api/v1/urls" \
-  -H "Content-Type: application/json; charset=utf-8" \
-  -d @body-count.json
-```
-
-Inline (подставьте `$PARSER_KEY`):
-
-```bash
-curl -sS -X POST "https://parsers.lawmatic.ru/api/v1/urls" \
-  -H "Content-Type: application/json; charset=utf-8" \
-  -d "{
-    \"params\": {
-      \"members\": \"Иванов Иван Иванович\",
-      \"reg_date_start\": \"01.01.2024\",
-      \"reg_date_stop\": \"31.12.2024\",
-      \"process_type\": \"гражданское\",
-      \"court_id\": \"77RS0001\",
-      \"unique_number\": \"\"
-    },
-    \"parser_id\": \"moscow\",
-    \"key\": \"${PARSER_KEY}\"
-  }"
-```
-
-**Пример ответа (успех):**
-
-```json
-{
-  "status": "ok",
-  "error": null,
-  "data": {
-    "total_urls": 42,
-    "total_pages": 5,
-    "total_captcha": 0,
-    "page": 0,
-    "urls": null,
-    "cases": null
-  }
-}
-```
-
-**Пример ответа (ошибка авторизации):**
-
-Фактически (проверено 21.09.2026) парсер отвечает на неверный или пустой ключ
-**HTTP 400** с телом:
-
-```json
-{"error":"Incorrect key","status":"error"}
-```
-
-В прежней версии справочника был такой вариант (HTTP 200):
-
-```json
-{
-  "status": "error",
-  "error": "Unauthorized",
-  "data": null
-}
-```
-
----
+**Неверный ключ:** HTTP **401**, `{"detail":"Неверный ключ"}` — клиент кидает
+`CourtMonitorInvalidKeyException`. Ключ проверяется раньше содержимого запроса,
+но после разбора тела: запрос без `parser_id` даёт 422 при любом ключе.
 
 ### 3.2. Краткие дела (одна страница)
 
-**Метод клиента:** `getShortCasesFromPage`
-
-`body-short-cases-page1.json`:
-
-```json
-{
-  "params": {
-    "page": 1,
-    "members": "Иванов Иван Иванович",
-    "reg_date_start": "01.01.2024",
-    "reg_date_stop": "31.12.2024",
-    "process_type": "гражданское",
-    "court_id": "77RS0001",
-    "unique_number": ""
-  },
-  "parser_id": "moscow",
-  "key": "ваш_api_ключ"
-}
-```
-
-```bash
-curl -sS -X POST "https://parsers.lawmatic.ru/api/v1/urls" \
-  -H "Content-Type: application/json; charset=utf-8" \
-  -d @body-short-cases-page1.json
-```
-
-Страница 2:
-
-```bash
-curl -sS -X POST "https://parsers.lawmatic.ru/api/v1/urls" \
-  -H "Content-Type: application/json; charset=utf-8" \
-  -d "{
-    \"params\": {
-      \"page\": 2,
-      \"members\": \"Иванов Иван Иванович\",
-      \"reg_date_start\": \"01.01.2024\",
-      \"reg_date_stop\": \"31.12.2024\",
-      \"process_type\": \"гражданское\",
-      \"court_id\": \"77RS0001\",
-      \"unique_number\": \"\"
-    },
-    \"parser_id\": \"moscow\",
-    \"key\": \"${PARSER_KEY}\"
-  }"
-```
-
-**Пример ответа:**
-
-```json
-{
-  "status": "ok",
-  "error": null,
-  "data": {
-    "total_urls": 42,
-    "total_pages": 5,
-    "total_captcha": 0,
-    "page": 1,
-    "urls": null,
-    "cases": [
-      {
-        "url": "https://tverskoy--mos.sudrf.ru/modules.php?name=sud_delo&...",
-        "number": "2-1234/2024",
-        "members": "Иванов И.И. - ответчик",
-        "status": "В производстве",
-        "judge": "Петров П.П.",
-        "article": null,
-        "category": "о взыскании задолженности"
-      }
-    ]
-  }
-}
-```
-
----
+**Метод клиента:** `getShortCasesFromPage` — то же, что §3.1, плюс `"page": 1`
+(с 1). Возвращает `search.cases`: `{url, number, extra}`.
 
 ### 3.3. Список URL дел (одна страница)
 
-**Метод клиента:** `getCasesUrlsFromPage`  
-Тело запроса **идентично** §3.2 (с полем `page`).
-
-```bash
-curl -sS -X POST "https://parsers.lawmatic.ru/api/v1/urls" \
-  -H "Content-Type: application/json; charset=utf-8" \
-  -d @body-short-cases-page1.json
-```
-
-**Пример ответа:**
-
-```json
-{
-  "status": "ok",
-  "error": null,
-  "data": {
-    "total_urls": 42,
-    "total_pages": 5,
-    "total_captcha": 0,
-    "page": 1,
-    "urls": [
-      "https://tverskoy--mos.sudrf.ru/modules.php?name=sud_delo&..."
-    ],
-    "cases": null
-  }
-}
-```
-
----
+**Метод клиента:** `getCasesUrlsFromPage` — запрос как в §3.2, возвращает `search.urls`.
 
 ### 3.4. URL дела по УИД
 
 **Метод клиента:** `getCaseUrlsForUid` (первый шаг `getFullCaseForUid`)
 
-`body-uid-urls.json`:
-
-```json
-{
-  "params": {
-    "court_id": "77RS0001",
-    "process_type": "",
-    "unique_number": "77RS0001-01-2024-00123456-01"
-  },
-  "parser_id": "moscow",
-  "key": "ваш_api_ключ"
-}
-```
-
 ```bash
-curl -sS -X POST "https://parsers.lawmatic.ru/api/v1/urls" \
+curl -sS -X POST "https://prsr.lawmatic.ru/v1/urls" \
   -H "Content-Type: application/json; charset=utf-8" \
-  -d @body-uid-urls.json
+  -H "x-api-key: ${PARSER_KEY}" \
+  -d "{\"parser_id\":\"moscow\",\"court_id\":\"77RS0001\",\"unique_number\":\"${UID}\"}"
 ```
 
-С переменной `$UID`:
-
-```bash
-curl -sS -X POST "https://parsers.lawmatic.ru/api/v1/urls" \
-  -H "Content-Type: application/json; charset=utf-8" \
-  -d "{
-    \"params\": {
-      \"court_id\": \"77RS0001\",
-      \"process_type\": \"\",
-      \"unique_number\": \"${UID}\"
-    },
-    \"parser_id\": \"moscow\",
-    \"key\": \"${PARSER_KEY}\"
-  }"
-```
-
-**Пример ответа:**
-
-```json
-{
-  "status": "ok",
-  "error": null,
-  "data": {
-    "total_urls": 1,
-    "total_pages": 1,
-    "total_captcha": 0,
-    "page": 1,
-    "urls": [
-      "https://tverskoy--mos.sudrf.ru/modules.php?name=sud_delo&..."
-    ],
-    "cases": null
-  }
-}
-```
+Возвращает `search.urls`.
 
 ---
 
-## 4. Полные карточки дел — `POST https://translator.lawmatic.ru/`
+## 4. Полные карточки дел — `POST https://prsr.lawmatic.ru/v1/parse`
 
-**Метод клиента:** `getFullCases`
-
-### 4.1. Одно дело по прямой ссылке
-
-`body-full-case-one.json`:
-
-```json
-{
-  "params": {
-    "court_id": "77RS0001",
-    "process_type": "",
-    "urls": [
-      "https://tverskoy--mos.sudrf.ru/modules.php?name=sud_delo&..."
-    ]
-  },
-  "parser_id": "moscow",
-  "key": "ваш_api_ключ"
-}
-```
+**Метод клиента:** `getFullCases` — URL бьются на пачки по 5, результаты склеиваются.
 
 ```bash
-curl -sS -X POST "https://translator.lawmatic.ru/" \
+curl -sS -X POST "https://prsr.lawmatic.ru/v1/parse" \
   -H "Content-Type: application/json; charset=utf-8" \
-  -d @body-full-case-one.json
+  -H "x-api-key: ${PARSER_KEY}" \
+  -d "{\"parser_id\":\"moscow\",\"court_id\":\"77RS0001\",\"urls\":[\"${CASE_URL}\"]}"
 ```
 
-С переменной `$CASE_URL`:
+Клиент возвращает `cases` конверта. Каждая карточка — каноничная:
 
-```bash
-curl -sS -X POST "https://translator.lawmatic.ru/" \
-  -H "Content-Type: application/json; charset=utf-8" \
-  -d "{
-    \"params\": {
-      \"court_id\": \"77RS0001\",
-      \"process_type\": \"\",
-      \"urls\": [\"${CASE_URL}\"]
-    },
-    \"parser_id\": \"moscow\",
-    \"key\": \"${PARSER_KEY}\"
-  }"
-```
+| Поле | Содержимое |
+|------|------------|
+| `schema_version`, `source`, `parser_id`, `url`, `parsed_at` | служебные |
+| `case` | `uid`, `number`, `instance_id`, `type`, `category`, `court_id`, `court_name`, `judge`, `receipt_date`, `decision_date`, `result`, `consideration`, `current_state`, `updated_at`, `extra` |
+| `parties[]` | `role`, `role_raw`, `name`, `inn`, `kpp`, `ogrn`, `ogrnip`, `address`, `id`, `extra` |
+| `events[]` | `name`, `date`, `time`, `place`, `result`, `reason`, `comment`, `published_at`, `extra` |
+| `documents[]` | `type`, `date`, `url`, `text`, `extra` |
+| `appeals[]`, `lower_court`, `writs[]`, `instances[]`, `extra` | остальное |
 
----
-
-### 4.2. Несколько дел (пакет, клиент шлёт до 5 URL)
-
-`body-full-cases-batch.json`:
-
-```json
-{
-  "params": {
-    "court_id": "77RS0001",
-    "process_type": "",
-    "urls": [
-      "https://tverskoy--mos.sudrf.ru/modules.php?name=sud_delo&case1",
-      "https://tverskoy--mos.sudrf.ru/modules.php?name=sud_delo&case2"
-    ]
-  },
-  "parser_id": "moscow",
-  "key": "ваш_api_ключ"
-}
-```
-
-```bash
-curl -sS -X POST "https://translator.lawmatic.ru/" \
-  -H "Content-Type: application/json; charset=utf-8" \
-  -d @body-full-cases-batch.json
-```
-
----
-
-### 4.3. Пример ответа (полное дело)
-
-```json
-{
-  "cases": [
-    {
-      "url": "https://tverskoy--mos.sudrf.ru/modules.php?name=sud_delo&...",
-      "acts": ["решение"],
-      "appeal": null,
-      "case_details": {
-        "case_id": "77RS0001-01-2024-00123456-01",
-        "case_num": "2-1234/2024",
-        "category": "о взыскании задолженности",
-        "judge": "Петров П.П.",
-        "court_name": "Тверской районный суд города Москвы",
-        "receipt_date": "15.01.2024",
-        "trial_date": "20.03.2024",
-        "trial_mark": "",
-        "trial_result": "Иск удовлетворён"
-      },
-      "case_parties": [
-        {
-          "party_name": "ООО «Ромашка»",
-          "party_type": "истец",
-          "party_inn": "7701234567",
-          "party_kpp": "770101001",
-          "party_ogrn": "1027700132195",
-          "party_ogrnip": null
-        }
-      ],
-      "case_progress": [],
-      "case_documents": [],
-      "lower_court_trials": null
-    }
-  ]
-}
-```
-
-HTTP **400** на этот запрос означает неверный `key` — клиент кидает `CourtMonitorInvalidKeyException`.
-
-Проверено 21.09.2026: ключ транслятор здесь не проверяет — с неверным ключом
-возвращает HTTP 200 и `{"cases":[]}`, как для дела, которое не нашлось.
+Схема — `/openapi.json` сервиса (`CanonicalCase`).
 
 ---
 
 ## 5. Проверка API-ключа
 
-**Endpoint:** `POST https://parsers.lawmatic.ru/api/v1/urls`  
 **Метод клиента:** `checkKey`
 
-Ключ проверяет только парсер. Транслятор на такой запрос при любом ключе
-отвечает `{"error":"Не определены/определены некорректно параметры запроса."}`
-(проверено 21.09.2026), хотя Swift-клиент когда-то проверял ключ именно
-через `https://translator.lawmatic.ru`. Пустой поиск парсер отрабатывает
-сразу, не обходя сайты судов.
-
-`body-check-key.json`:
-
-```json
-{
-  "params": {
-    "court_id": ""
-  },
-  "parser_id": "moscow",
-  "key": "ваш_api_ключ"
-}
-```
-
-```bash
-curl -sS -X POST "https://parsers.lawmatic.ru/api/v1/urls" \
-  -H "Content-Type: application/json; charset=utf-8" \
-  -d @body-check-key.json
-```
-
-```bash
-curl -sS -X POST "https://parsers.lawmatic.ru/api/v1/urls" \
-  -H "Content-Type: application/json; charset=utf-8" \
-  -d "{
-    \"params\": { \"court_id\": \"\" },
-    \"parser_id\": \"moscow\",
-    \"key\": \"${PARSER_KEY}\"
-  }"
-```
-
-**Ключ валиден (HTTP 200):**
-
-```json
-{
-  "data": {
-    "total_urls": 0,
-    "total_pages": 0,
-    "total_captcha": 0,
-    "page": 1,
-    "urls": null,
-    "cases": null
-  },
-  "status": "ok"
-}
-```
-
-**Ключ невалиден (HTTP 400):**
-
-```json
-{"error":"Incorrect key","status":"error"}
-```
-
-`checkKey` возвращает `true`/`false` только когда сервис ответил про ключ;
-сбой сети или другая ошибка сервиса — исключение, а не `false`.
+Клиент шлёт `GET https://prsr.lawmatic.ru/v1/key/check` с заголовком `x-api-key`;
+сайты судов сервис не дёргает. HTTP 200 — ключ принят (`true`), HTTP 401 — неверный (`false`).
+Сбой сети или другая ошибка сервиса —
+исключение, а не `false`.
 
 ---
 
-## 6. Типовые сценарии (цепочки curl)
+## 6. Типовые сценарии
 
 ### 6.1. Поиск дел по участнику и датам
 
-```bash
-# Шаг 1: подсчёт
-curl -sS -X POST "https://parsers.lawmatic.ru/api/v1/urls" \
-  -H "Content-Type: application/json; charset=utf-8" \
-  -d @body-count.json
-
-# Шаг 2: URL по страницам (page = 1 .. total_pages)
-curl -sS -X POST "https://parsers.lawmatic.ru/api/v1/urls" \
-  -H "Content-Type: application/json; charset=utf-8" \
-  -d @body-short-cases-page1.json
-
-# Шаг 3: полные дела по полученным URL (пачками до 5)
-curl -sS -X POST "https://translator.lawmatic.ru/" \
-  -H "Content-Type: application/json; charset=utf-8" \
-  -d @body-full-cases-batch.json
-```
-
----
+1. §3.1 — подсчёт (`total_pages`);
+2. §3.3 (или §3.2) для `page = 1 .. total_pages`;
+3. §4 — полные дела по полученным URL.
 
 ### 6.2. Дело по прямой ссылке
 
-```bash
-# Шаг 1: определить parser_id и court_id
-curl -sS -X POST "https://translator.lawmatic.ru/" \
-  -H "Content-Type: application/json; charset=utf-8" \
-  -d "{\"court_url\":\"${COURT_URL}\"}"
-
-# Шаг 2: полная карточка по URL дела
-curl -sS -X POST "https://translator.lawmatic.ru/" \
-  -H "Content-Type: application/json; charset=utf-8" \
-  -d "{
-    \"params\": {
-      \"court_id\": \"77RS0001\",
-      \"process_type\": \"\",
-      \"urls\": [\"${CASE_URL}\"]
-    },
-    \"parser_id\": \"moscow\",
-    \"key\": \"${PARSER_KEY}\"
-  }"
-```
-
----
+1. §2 — `parser_id` и `court_id` по URL сайта суда;
+2. §4 — полная карточка по URL дела.
 
 ### 6.3. Дело по УИД
 
-```bash
-# Шаг 1: получить URL по УИД
-curl -sS -X POST "https://parsers.lawmatic.ru/api/v1/urls" \
-  -H "Content-Type: application/json; charset=utf-8" \
-  -d @body-uid-urls.json
-
-# Шаг 2: полная карточка (подставьте URL из ответа шага 1)
-curl -sS -X POST "https://translator.lawmatic.ru/" \
-  -H "Content-Type: application/json; charset=utf-8" \
-  -d @body-full-case-one.json
-```
-
----
+1. §3.4 — URL по УИД;
+2. §4 — полная карточка. `getFullCaseForUid` делает оба шага; код суда берёт
+   из первых 8 символов УИД, если `court_id` не передан. Для парсеров с
+   другим видом `court_id` (например `federal`: `odintsovo--mo`) передайте его явно.
 
 ### 6.4. Иерархия судов по УИД (первые 8 символов = код суда)
 
 ```bash
-# Код суда из УИД, например 77RS0001
 export COURT_CODE_FROM_UID="${UID:0:8}"
 
 # Шаг 1: поиск суда по коду — в ответе уже есть website и hierarchy
@@ -774,25 +378,28 @@ curl -sS "https://courts.lawmatic.ru/api/v1/courts/${COURT_ID}" \
 ```
 
 Так можно найти сайт суда для §2, когда в запросе мониторинга есть только
-УИД или код суда. Проверено 21.09.2026: `77RS0021` → `https://mos-gorsud.ru/rs/presnenskij`
-→ парсер `moscow`, `court_id` `presnenskij`; `50RS0031` → `https://odintsovo.mo.sudrf.ru`
-→ парсер `federal`, `court_id` `odintsovo--mo`.
+УИД или код суда.
 
 ---
 
-## 7. Справка: поля `params` для `/api/v1/urls`
+## 7. Справка: поля поиска `/v1/urls`
 
 | Поле | Назначение | Пример |
 |------|------------|--------|
-| `members` | Участник дела | `"Иванов И.И."` |
-| `reg_date_start` | Дата регистрации от (`дд.мм.гггг`) | `"01.01.2024"` |
-| `reg_date_stop` | Дата регистрации до | `"31.12.2024"` |
-| `process_type` | Тип производства | `"гражданское"` |
+| `parser_id` | Парсер (обязательно) | `"moscow"` |
 | `court_id` | ID суда в парсере | `"77RS0001"` |
+| `case_number` | Номер дела | `"2-1234/2024"` |
 | `unique_number` | УИД дела | `"77RS0001-01-2024-..."` |
+| `members` | Участник дела | `"Иванов И.И."` |
+| `inn`, `ogrn` | ИНН / ОГРН участника | `"7701234567"` |
+| `judge` | Судья | `"Петров П.П."` |
+| `date_from`, `date_to` | Дата регистрации от / до (`дд.мм.гггг`) | `"01.01.2024"` |
+| `case_final_date_from`, `case_final_date_to` | Дата окончания дела от / до | `"01.01.2024"` |
+| `process_type` | Тип производства | `"гражданское"` |
 | `page` | Номер страницы (с 1) | `1` |
 
-> Для Swift-клиента: в API уходят `reg_date_start` / `reg_date_stop` из полей `caseDateFrom` / `caseDateTo` структуры `ParserParams`, а не из `regDateStart` / `regDateStop`.
+Поля `reg_date_start` / `reg_date_stop` старого API больше не действуют —
+вместо них `date_from` / `date_to`.
 
 ---
 
@@ -800,15 +407,8 @@ curl -sS "https://courts.lawmatic.ru/api/v1/courts/${COURT_ID}" \
 
 | Назначение | Адрес | Аргумент конструктора (константа) |
 |------------|-------|-----------------------------------|
-| Список URL / подсчёт / краткие дела, проверка ключа | `https://parsers.lawmatic.ru/api/v1/urls` | `$parserUrl` (`DEFAULT_PARSER_URL`) |
-| Парсер по URL суда, полные дела | `https://translator.lawmatic.ru/` | `$translatorUrl` (`DEFAULT_TRANSLATOR_URL`) |
+| Парсеры: `/v1/resolve`, `/v1/urls`, `/v1/parse` | `https://prsr.lawmatic.ru` | `$parserUrl` (`DEFAULT_PARSER_URL`) |
 | Каталог судов | `https://courts.lawmatic.ru` | `$courtsUrl` (`DEFAULT_COURTS_URL`) |
-
-Закомментированные альтернативы в `ParserManager.swift`:
-
-- `https://api.allcourts.ru/api/v1/urls`
-- `https://api.allcourts.ru/`
-- `https://parsers.lawmatic.ru/api/v1/parse`
 
 ---
 
@@ -817,8 +417,9 @@ curl -sS "https://courts.lawmatic.ru/api/v1/courts/${COURT_ID}" \
 Для сложных JSON удобнее сохранить тело в файл и вызвать:
 
 ```powershell
-curl.exe -sS -X POST "https://parsers.lawmatic.ru/api/v1/urls" `
+curl.exe -sS -X POST "https://prsr.lawmatic.ru/v1/urls" `
   -H "Content-Type: application/json; charset=utf-8" `
+  -H "x-api-key: $env:PARSER_KEY" `
   -d "@body-count.json"
 ```
 
