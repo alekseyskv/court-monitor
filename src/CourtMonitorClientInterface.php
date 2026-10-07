@@ -118,4 +118,55 @@ interface CourtMonitorClientInterface
      *                               тогда о ключе ничего не известно
      */
     public function checkKey(?string $key = null, ?string $parserId = null): bool;
+
+    /**
+     * Задание search: вся выдача по суду в фоне (POST /v1/jobs). Параметры — как у
+     * поиска (members, court_id, date_from, ...); виды производства — `process_types`
+     * (или `process_type`, один). `$options`: queue (monitoring|adhoc), max_pages,
+     * max_cases, max_captcha. Нужен ключ клиента (cp_…), не общий ключ сервиса.
+     *
+     * @param array<string, mixed> $params
+     * @param array<string, mixed> $options
+     * @return array{job_id: string, status: string, duplicate: bool}
+     */
+    public function createSearchJob(array $params, ?string $parserId = null, array $options = [], ?string $key = null): array;
+
+    /**
+     * Задание cards: карточки по ссылкам (до 500). Парсер и суд — по каждой ссылке.
+     *
+     * @param array<int, string>   $urls
+     * @param array<string, mixed> $options queue, max_cases, max_captcha
+     * @return array{job_id: string, status: string, duplicate: bool}
+     */
+    public function createCardsJob(array $urls, array $options = [], ?string $key = null): array;
+
+    /**
+     * Статус и прогресс задания: status (queued|running|done|partial|failed|cancelled),
+     * progress, errors, note.
+     *
+     * @return array<string, mixed>
+     */
+    public function getJob(string $jobId, ?string $key = null): array;
+
+    /**
+     * Результаты задания частью: `items` (seq, url, number, data), `next_after` —
+     * курсор следующей части, `complete` — больше ничего не будет.
+     *
+     * @return array<string, mixed>
+     */
+    public function getJobResults(string $jobId, int $after = 0, int $limit = 100, ?string $key = null): array;
+
+    /**
+     * Все результаты задания (по частям до конца). Для завершённого задания.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function getAllJobResults(string $jobId, ?string $key = null): array;
+
+    /**
+     * Отменить задание: новые шаги не берутся, идущие дорабатывают.
+     *
+     * @return array{job_id: string, status: string}
+     */
+    public function cancelJob(string $jobId, ?string $key = null): array;
 }

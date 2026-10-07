@@ -43,6 +43,8 @@ $client = new CourtMonitorClient(
 | `getFullCases` | Полные карточки по URL (каноничный формат), пачками по 5 | §4 |
 | `getFullCaseForUid` | §3.4 + §4 одним вызовом; код суда — первые 8 символов УИД | §6.3 |
 | `checkKey` | Проверка ключа парсера | §5 |
+| `createSearchJob`, `createCardsJob` | Задание в фоне: вся выдача по суду / карточки по ссылкам | §5.1 |
+| `getJob`, `getJobResults`, `getAllJobResults`, `cancelJob` | Статус, результаты частями или все, отмена | §5.1 |
 
 У методов парсера и транслятора последние аргументы `$parserId` и `$key`
 необязательны: без них берутся значения, заданные при создании клиента.
@@ -57,7 +59,12 @@ $client = new CourtMonitorClient(
   `{"status":"error","error":"…"}`, текст — в `getApiError()`;
 - `CourtMonitorInvalidKeyException` — сервис отверг ключ: HTTP 401
   `{"detail":"Неверный ключ"}` (§3.1) или конверт с ошибкой `Неверный ключ` /
-  `Incorrect key` / `Invalid key` / `Unauthorized`.
+  `Incorrect key` / `Invalid key` / `Unauthorized`. У заданий (§5.1) — ещё
+  HTTP 403: общий ключ сервиса вместо ключа клиента `cp_…`.
+
+У заданий ошибки сервиса приходят не конвертом, а `{"detail": …}` с HTTP-кодом:
+400 (параметры, неизвестный сайт), 404 (задания нет), 503 (база заданий не
+настроена) — это `CourtMonitorApiErrorException` с кодом и текстом `detail`.
 
 Текст сообщения — часть контракта, его префиксы менять нельзя: транспортные
 ошибки начинаются с `CourtMonitor request to <url> failed:`, ошибки сервиса —
@@ -241,7 +248,7 @@ curl -sS -X POST "https://prsr.lawmatic.ru/v1/resolve" \
   "status": "ok",
   "request_id": "…",
   "parser_id": "moscow",
-  "court_id": "77RS0001",
+  "court_id": "presnenskij",
   "cases": [],
   "search": {
     "urls": [],
@@ -268,11 +275,11 @@ curl -sS -X POST "https://prsr.lawmatic.ru/v1/urls" \
   -H "x-api-key: ${PARSER_KEY}" \
   -d '{
     "parser_id": "moscow",
-    "court_id": "77RS0001",
+    "court_id": "presnenskij",
     "members": "Иванов Иван Иванович",
     "date_from": "01.01.2024",
     "date_to": "31.12.2024",
-    "process_type": "гражданское"
+    "process_type": "2"
   }'
 ```
 
@@ -297,7 +304,7 @@ curl -sS -X POST "https://prsr.lawmatic.ru/v1/urls" \
 curl -sS -X POST "https://prsr.lawmatic.ru/v1/urls" \
   -H "Content-Type: application/json; charset=utf-8" \
   -H "x-api-key: ${PARSER_KEY}" \
-  -d "{\"parser_id\":\"moscow\",\"court_id\":\"77RS0001\",\"unique_number\":\"${UID}\"}"
+  -d "{\"parser_id\":\"moscow\",\"court_id\":\"presnenskij\",\"unique_number\":\"${UID}\"}"
 ```
 
 Возвращает `search.urls`.
@@ -312,7 +319,7 @@ curl -sS -X POST "https://prsr.lawmatic.ru/v1/urls" \
 curl -sS -X POST "https://prsr.lawmatic.ru/v1/parse" \
   -H "Content-Type: application/json; charset=utf-8" \
   -H "x-api-key: ${PARSER_KEY}" \
-  -d "{\"parser_id\":\"moscow\",\"court_id\":\"77RS0001\",\"urls\":[\"${CASE_URL}\"]}"
+  -d "{\"parser_id\":\"moscow\",\"court_id\":\"presnenskij\",\"urls\":[\"${CASE_URL}\"]}"
 ```
 
 Клиент возвращает `cases` конверта. Каждая карточка — каноничная:
@@ -339,6 +346,40 @@ curl -sS -X POST "https://prsr.lawmatic.ru/v1/parse" \
 Сбой сети или другая ошибка сервиса —
 исключение, а не `false`.
 
+### 5.1. Задания — поиск и карточки в фоне (`/v1/jobs`)
+
+Долгий поиск (все страницы, дробление периода при выдаче, обрезанной на 1500) и
+пачки карточек сервис выполняет сам, в фоне: не нужно держать HTTP-запрос
+минутами. Только по **ключу клиента** `cp_…` (общий ключ сервиса — 403).
+
+```php
+// поиск: поля как у §3 (members, court_id, date_from, ...), виды производства — process_types
+$job = $client->createSearchJob(
+    ['members' => 'Иванов И.И.', 'court_id' => 'presnenskij', 'process_types' => ['2']],
+    'moscow',
+    ['queue' => 'monitoring', 'max_pages' => 20, 'max_cases' => 300],
+);
+// $job = ['job_id' => '…', 'status' => 'queued', 'duplicate' => false]
+
+$view = $client->getJob($job['job_id']);          // status: queued|running|done|partial|failed|cancelled
+if (!in_array($view['status'], ['queued', 'running'], true)) {
+    $items = $client->getAllJobResults($job['job_id']);
+    // [['seq' => 1, 'url' => '…', 'number' => '…', 'data' => ['key' => 'mos-gorsud:presnenskij:…', 'extra' => […]]], …]
+}
+
+$cards = $client->createCardsJob(['https://…', 'https://…']);   // до 500 ссылок; data.case — карточка как в §4
+```
+
+- `queue`: `monitoring` (по расписанию) или `adhoc` (разовые) — по умолчанию очередь клиента.
+- `max_pages` — страниц **на каждый период** (обрезанная выдача делится по датам);
+  общий объём держит `max_cases` (по умолчанию 2000), `max_captcha` — 20.
+  Упёрлись в лимит — статус `partial`, причина — в `note`.
+- `data.key` — ключ дела «сайт:суд:номер»: тот же у строки выдачи и у карточки;
+  по нему известное дело узнаётся без открытия карточки. УИДа в выдаче почти
+  нигде нет — только в карточке.
+- Те же параметры от того же клиента в течение 10 минут — то же задание (`duplicate: true`).
+- Результаты завершённых заданий хранятся 7 дней.
+
 ---
 
 ## 6. Типовые сценарии
@@ -360,6 +401,8 @@ curl -sS -X POST "https://prsr.lawmatic.ru/v1/parse" \
 2. §4 — полная карточка. `getFullCaseForUid` делает оба шага; код суда берёт
    из первых 8 символов УИД, если `court_id` не передан. Для парсеров с
    другим видом `court_id` (например `federal`: `odintsovo--mo`) передайте его явно.
+   У `moscow` код из УИД портал не распознаёт и ищет УИД по всем судам Москвы:
+   дело находится, но для поиска по участнику передавайте `court_id` из §2.
 
 ### 6.4. Иерархия судов по УИД (первые 8 символов = код суда)
 
@@ -387,7 +430,7 @@ curl -sS "https://courts.lawmatic.ru/api/v1/courts/${COURT_ID}" \
 | Поле | Назначение | Пример |
 |------|------------|--------|
 | `parser_id` | Парсер (обязательно) | `"moscow"` |
-| `court_id` | ID суда в парсере | `"77RS0001"` |
+| `court_id` | ID суда в парсере — тот, что вернул §2 по сайту суда (`presnenskij`, `odintsovo--mo`), а не код из каталога. Код вроде `77RS0021` mos-gorsud.ru молча пропускает и ищет по всем судам Москвы | `"presnenskij"` |
 | `case_number` | Номер дела | `"2-1234/2024"` |
 | `unique_number` | УИД дела | `"77RS0001-01-2024-..."` |
 | `members` | Участник дела | `"Иванов И.И."` |
@@ -395,8 +438,19 @@ curl -sS "https://courts.lawmatic.ru/api/v1/courts/${COURT_ID}" \
 | `judge` | Судья | `"Петров П.П."` |
 | `date_from`, `date_to` | Дата регистрации от / до (`дд.мм.гггг`) | `"01.01.2024"` |
 | `case_final_date_from`, `case_final_date_to` | Дата окончания дела от / до | `"01.01.2024"` |
-| `process_type` | Тип производства | `"гражданское"` |
+| `process_type` | Вид производства, значения — у каждого парсера свои (ниже). Пусто — по умолчанию парсера | `"criminal"` |
 | `page` | Номер страницы (с 1) | `1` |
+
+Значения `process_type`. Неизвестное значение — ошибка запроса, а не поиск «по умолчанию».
+
+| Парсер | Значения | Пусто |
+|--------|----------|-------|
+| `federal` | `civil`, `admin` (КАС), `criminal`, `adm_offense` (КоАП), `materials`, `civil_appeal`, `criminal_appeal`, `adm_offense_appeal` | `civil` |
+| `federal_magistrate` | `civil`, `criminal`, `adm_offense` | `civil` |
+| `cassation` | `civil` | `civil` |
+| `moscow` | код формы поиска mos-gorsud.ru (`2` — гражданские, …) | все виды |
+| `moscow_magistrate` | код формы поиска mos-sud.ru (`2` — гражданские, …) | `2` |
+| `spb_magistrate` | `civil`, … как на mirsud.spb.ru | `civil` |
 
 Поля `reg_date_start` / `reg_date_stop` старого API больше не действуют —
 вместо них `date_from` / `date_to`.

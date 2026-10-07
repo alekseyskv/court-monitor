@@ -20,6 +20,7 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
  *      POST /v1/resolve — парсер и код суда по URL сайта суда
  *      POST /v1/urls    — поиск дел (URL, краткие карточки, подсчёт)
  *      POST /v1/parse   — полные карточки дел по URL
+ *      /v1/jobs         — задания: поиск и карточки в фоне (ключ клиента cp_…)
  *
  * Парсер принимает ключ в заголовке `x-api-key`, плоское JSON-тело и отвечает
  * конвертом {"status","request_id","parser_id","court_id","cases","search","error"} —
@@ -43,6 +44,12 @@ class CourtMonitorClient implements CourtMonitorClientInterface
 
     /** Сколько судов отдавать из поиска по каталогу. */
     private const COURTS_SEARCH_LIMIT = 20;
+
+    /** Сколько результатов задания забирать за один запрос в {@see getAllJobResults()}. */
+    private const JOB_RESULTS_PAGE = 500;
+
+    /** Параметры задания, которые не являются полями поиска. */
+    private const JOB_OPTIONS = ['queue', 'max_pages', 'max_cases', 'max_captcha'];
 
     /**
      * @param string $defaultParserId парсер, если вызывающий код не передал свой
@@ -303,6 +310,104 @@ class CourtMonitorClient implements CourtMonitorClientInterface
         } catch (CourtMonitorTransportException $e) {
             if ($e->getCode() === 401) {
                 return false;
+            }
+
+            throw $e;
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // 6. Задания — поиск и карточки в фоне (/v1/jobs)
+    // ---------------------------------------------------------------------
+
+    public function createSearchJob(array $params, ?string $parserId = null, array $options = [], ?string $key = null): array
+    {
+        // Старый поиск принимает один process_type, задание — список process_types.
+        $types = $params['process_types'] ?? (($params['process_type'] ?? '') !== '' ? [$params['process_type']] : []);
+        unset($params['process_type'], $params['process_types']);
+        $body = ['type' => 'search', 'parser_id' => $parserId ?? $this->defaultParserId]
+            + array_filter($params, static fn ($value) => $value !== null && $value !== '')
+            + ['process_types' => array_values($types)]
+            + $this->jobOptions($options);
+
+        return $this->jobs('POST', '', $key, ['json' => $body]);
+    }
+
+    public function createCardsJob(array $urls, array $options = [], ?string $key = null): array
+    {
+        $body = ['type' => 'cards', 'urls' => array_values($urls)] + $this->jobOptions($options);
+
+        return $this->jobs('POST', '', $key, ['json' => $body]);
+    }
+
+    public function getJob(string $jobId, ?string $key = null): array
+    {
+        return $this->jobs('GET', '/' . rawurlencode($jobId), $key);
+    }
+
+    public function getJobResults(string $jobId, int $after = 0, int $limit = 100, ?string $key = null): array
+    {
+        return $this->jobs('GET', '/' . rawurlencode($jobId) . '/results', $key, [
+            'query' => ['after' => $after, 'limit' => $limit],
+        ]);
+    }
+
+    public function getAllJobResults(string $jobId, ?string $key = null): array
+    {
+        $items = [];
+        $after = 0;
+        do {
+            $page = $this->getJobResults($jobId, $after, self::JOB_RESULTS_PAGE, $key);
+            $chunk = is_array($page['items'] ?? null) ? $page['items'] : [];
+            array_push($items, ...$chunk);
+            $after = (int) ($page['next_after'] ?? $after);
+            // Задание ещё идёт или страница полная — может быть продолжение.
+        } while (count($chunk) === self::JOB_RESULTS_PAGE);
+
+        return $items;
+    }
+
+    public function cancelJob(string $jobId, ?string $key = null): array
+    {
+        return $this->jobs('DELETE', '/' . rawurlencode($jobId), $key);
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    private function jobOptions(array $options): array
+    {
+        return array_filter(
+            array_intersect_key($options, array_flip(self::JOB_OPTIONS)),
+            static fn ($value) => $value !== null && $value !== '',
+        );
+    }
+
+    /**
+     * Запрос к /v1/jobs. Ответы — обычный JSON, не конверт. Ошибки сервиса —
+     * `{"detail": ...}` с HTTP-статусом: 401 (неверный ключ) и 403 (общий ключ
+     * сервиса вместо ключа клиента) — {@see CourtMonitorInvalidKeyException};
+     * 400 / 404 / 503 — {@see CourtMonitorApiErrorException} с текстом detail и
+     * HTTP-кодом; без тела — {@see CourtMonitorTransportException}.
+     *
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    private function jobs(string $method, string $path, ?string $key, array $options = []): array
+    {
+        $options['headers'] = ['x-api-key' => $key ?? $this->key];
+        try {
+            return $this->json($method, $this->parserEndpoint('/v1/jobs' . $path), $options);
+        } catch (CourtMonitorTransportException $e) {
+            $body = $this->errorBody($e);
+            $detail = $body['detail'] ?? null;
+            if ($e->getCode() === 401 || ($e->getCode() === 403 && $detail !== null)) {
+                throw new CourtMonitorInvalidKeyException($e->getMessage(), $e->getCode(), $e);
+            }
+            if ($detail !== null) {
+                $text = is_string($detail) ? $detail : json_encode($detail, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                throw new CourtMonitorApiErrorException((string) $text, $e->getCode(), $e);
             }
 
             throw $e;

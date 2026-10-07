@@ -397,6 +397,119 @@ final class CourtMonitorClientTest extends TestCase
         }
     }
 
+    // --- задания /v1/jobs ---
+
+    public function testCreateSearchJobSendsFlatSearchFieldsAndOptions(): void
+    {
+        $client = $this->client([$this->json(['job_id' => 'j1', 'status' => 'queued', 'duplicate' => false])]);
+
+        $job = $client->createSearchJob(
+            ['members' => 'Иванов', 'court_id' => 'odintsovo--mo', 'date_from' => '', 'process_type' => 'criminal'],
+            'federal',
+            ['max_pages' => 20, 'queue' => 'monitoring', 'unknown' => 'x', 'max_cases' => null],
+        );
+
+        self::assertSame(['job_id' => 'j1', 'status' => 'queued', 'duplicate' => false], $job);
+        self::assertSame('POST', $this->requests[0]['method']);
+        self::assertSame(self::PARSER_URL . '/v1/jobs', $this->requests[0]['url']);
+        self::assertContains('x-api-key: secret', $this->requests[0]['headers']);
+        // пустые поля и незнакомые опции не уходят; один process_type — список process_types
+        // (порядок полей JSON не важен)
+        self::assertEquals([
+            'type' => 'search',
+            'parser_id' => 'federal',
+            'members' => 'Иванов',
+            'court_id' => 'odintsovo--mo',
+            'process_types' => ['criminal'],
+            'queue' => 'monitoring',
+            'max_pages' => 20,
+        ], $this->requests[0]['body']);
+    }
+
+    public function testCreateSearchJobDefaultsParserAndAllProcessTypes(): void
+    {
+        $client = $this->client([$this->json(['job_id' => 'j1', 'status' => 'queued', 'duplicate' => true])]);
+
+        $client->createSearchJob(['members' => 'Иванов', 'process_types' => ['civil', 'criminal']]);
+
+        self::assertSame('moscow', $this->requests[0]['body']['parser_id']);
+        self::assertSame(['civil', 'criminal'], $this->requests[0]['body']['process_types']);
+    }
+
+    public function testCreateCardsJob(): void
+    {
+        $client = $this->client([$this->json(['job_id' => 'j2', 'status' => 'queued', 'duplicate' => false])]);
+
+        $client->createCardsJob(['https://a', 'https://b'], ['queue' => 'adhoc'], 'cp_other');
+
+        self::assertSame(['type' => 'cards', 'urls' => ['https://a', 'https://b'], 'queue' => 'adhoc'], $this->requests[0]['body']);
+        self::assertContains('x-api-key: cp_other', $this->requests[0]['headers']);
+    }
+
+    public function testGetJobResultsAndCancel(): void
+    {
+        $client = $this->client([
+            $this->json(['job_id' => 'j1', 'status' => 'done', 'progress' => ['results' => 2]]),
+            $this->json(['items' => [['seq' => 7, 'url' => 'https://a']], 'next_after' => 7, 'complete' => true]),
+            $this->json(['job_id' => 'j1', 'status' => 'cancelled']),
+        ]);
+
+        self::assertSame('done', $client->getJob('j1')['status']);
+        self::assertSame(7, $client->getJobResults('j1', 5, 50)['next_after']);
+        self::assertSame('cancelled', $client->cancelJob('j1')['status']);
+
+        self::assertSame(['GET', self::PARSER_URL . '/v1/jobs/j1'], [$this->requests[0]['method'], $this->requests[0]['url']]);
+        self::assertSame(self::PARSER_URL . '/v1/jobs/j1/results?after=5&limit=50', $this->requests[1]['url']);
+        self::assertSame(['DELETE', self::PARSER_URL . '/v1/jobs/j1'], [$this->requests[2]['method'], $this->requests[2]['url']]);
+    }
+
+    public function testGetAllJobResultsWalksPagesUntilShortOne(): void
+    {
+        $full = array_map(static fn (int $n) => ['seq' => $n, 'url' => "https://c/$n"], range(1, 500));
+        $client = $this->client([
+            $this->json(['items' => $full, 'next_after' => 500, 'complete' => false]),
+            $this->json(['items' => [['seq' => 501, 'url' => 'https://c/501']], 'next_after' => 501, 'complete' => true]),
+        ]);
+
+        $items = $client->getAllJobResults('j1');
+
+        self::assertCount(501, $items);
+        self::assertSame(self::PARSER_URL . '/v1/jobs/j1/results?after=500&limit=500', $this->requests[1]['url']);
+    }
+
+    /**
+     * @return iterable<string, array{int, string, class-string, string}>
+     */
+    public static function jobErrors(): iterable
+    {
+        yield 'неверный ключ' => [401, '{"detail":"Неверный ключ"}', CourtMonitorInvalidKeyException::class, ''];
+        yield 'общий ключ вместо ключа клиента' => [403, '{"detail":"Задания — только по ключу клиента (cp_…)"}', CourtMonitorInvalidKeyException::class, ''];
+        yield 'задания нет' => [404, '{"detail":"Задания нет"}', CourtMonitorApiErrorException::class, 'Задания нет'];
+        yield 'неизвестный сайт' => [400, '{"detail":{"error":"Неизвестный сайт суда","urls":["https://x"]}}', CourtMonitorApiErrorException::class, '{"error":"Неизвестный сайт суда","urls":["https://x"]}'];
+        yield 'база недоступна' => [503, '{"detail":"Задания недоступны: база не настроена"}', CourtMonitorApiErrorException::class, 'Задания недоступны: база не настроена'];
+        yield 'прокси без тела' => [502, 'Bad Gateway', CourtMonitorTransportException::class, ''];
+    }
+
+    /**
+     * @dataProvider jobErrors
+     * @param class-string $class
+     */
+    public function testJobErrors(int $code, string $body, string $class, string $apiError): void
+    {
+        $client = $this->client([new MockResponse($body, ['http_code' => $code])]);
+
+        try {
+            $client->getJob('j1');
+            self::fail('ожидалось исключение');
+        } catch (CourtMonitorException $e) {
+            self::assertInstanceOf($class, $e);
+            self::assertSame($code, $e->getCode());
+            if ($e instanceof CourtMonitorApiErrorException) {
+                self::assertSame($apiError, $e->getApiError());
+            }
+        }
+    }
+
     /**
      * @param list<MockResponse> $responses
      */
@@ -448,6 +561,14 @@ final class CourtMonitorClientTest extends TestCase
             ['status' => 'ok', 'request_id' => 'r1', 'cases' => $cases, 'search' => null, 'error' => null],
             JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR,
         ));
+    }
+
+    /**
+     * @param array<string, mixed> $body
+     */
+    private function json(array $body): MockResponse
+    {
+        return new MockResponse(json_encode($body, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
     }
 
     private function error(string $error): MockResponse
