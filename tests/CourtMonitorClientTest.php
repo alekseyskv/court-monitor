@@ -440,9 +440,12 @@ final class CourtMonitorClientTest extends TestCase
     {
         $client = $this->client([$this->json(['job_id' => 'j2', 'status' => 'queued', 'duplicate' => false])]);
 
-        $client->createCardsJob(['https://a', 'https://b'], ['queue' => 'adhoc'], 'cp_other');
+        $client->createCardsJob(['https://a', 'https://b'], ['queue' => 'adhoc', 'group' => 'court-search:42'], 'cp_other');
 
-        self::assertSame(['type' => 'cards', 'urls' => ['https://a', 'https://b'], 'queue' => 'adhoc'], $this->requests[0]['body']);
+        self::assertSame(
+            ['type' => 'cards', 'urls' => ['https://a', 'https://b'], 'queue' => 'adhoc', 'group' => 'court-search:42'],
+            $this->requests[0]['body'],
+        );
         self::assertContains('x-api-key: cp_other', $this->requests[0]['headers']);
     }
 

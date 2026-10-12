@@ -123,7 +123,8 @@ interface CourtMonitorClientInterface
      * Задание search: вся выдача по суду в фоне (POST /v1/jobs). Параметры — как у
      * поиска (members, court_id, date_from, ...); виды производства — `process_types`
      * (или `process_type`, один). `$options`: queue (monitoring|adhoc), max_pages,
-     * max_cases, max_captcha. Нужен ключ клиента (cp_…), не общий ключ сервиса.
+     * max_cases, max_captcha, group (задания одного дела — сервис делит воркеры между
+     * группами, а не между заданиями). Нужен ключ клиента (cp_…), не общий ключ сервиса.
      *
      * @param array<string, mixed> $params
      * @param array<string, mixed> $options
@@ -135,7 +136,7 @@ interface CourtMonitorClientInterface
      * Задание cards: карточки по ссылкам (до 500). Парсер и суд — по каждой ссылке.
      *
      * @param array<int, string>   $urls
-     * @param array<string, mixed> $options queue, max_cases, max_captcha
+     * @param array<string, mixed> $options queue, max_cases, max_captcha, group
      * @return array{job_id: string, status: string, duplicate: bool}
      */
     public function createCardsJob(array $urls, array $options = [], ?string $key = null): array;

@@ -49,7 +49,7 @@ class CourtMonitorClient implements CourtMonitorClientInterface
     private const JOB_RESULTS_PAGE = 500;
 
     /** Параметры задания, которые не являются полями поиска. */
-    private const JOB_OPTIONS = ['queue', 'max_pages', 'max_cases', 'max_captcha'];
+    private const JOB_OPTIONS = ['queue', 'max_pages', 'max_cases', 'max_captcha', 'group'];
 
     /**
      * @param string $defaultParserId парсер, если вызывающий код не передал свой
