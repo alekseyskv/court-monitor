@@ -474,6 +474,12 @@ curl -sS "https://courts.lawmatic.ru/api/v1/courts/${COURT_ID}" \
 | `spb_magistrate` | `civil`, `adm`, `criminal` | `civil` |
 | `tatarstan_magistrate` | `1` — КАС, `2` — гражданские, `3` — КоАП, `6` — уголовные | `2` |
 | `vsrf` | `CIVIL`, `ECONOMIC`, `ADMINISTRATIVE`, `ADMINISTRATIVE_INFRACTION`, `CRIMINAL`, `DISCIPLINARY_DISPUTE` | все виды |
+| `kad` | `administrative`, `civil`, `bankruptcy` | все |
+
+КАД: `court_id` — код суда в фильтре «Суд» КАД (`MSK`, `9AAS`, `SIP`…), его возвращает §2 по
+сайту суда (`msk.arbitr.ru` → `MSK`); несколько судов — список `courts` (и в заданиях §5.1). Без
+суда — поиск по всему КАД. С сервера КАД ищется через браузер в воркере заданий (prsr),
+поэтому КАД — через задания §5.1.
 
 Значения `instance` (другие парсеры инстанцию не фильтруют: `instance` для них — ошибка
 запроса).
