@@ -231,6 +231,18 @@ curl -sS -X POST "https://prsr.lawmatic.ru/v1/resolve" \
 `federal`, `federal_magistrate`, `kad`, `moscow`, `moscow_magistrate`,
 `spb_magistrate`, `tatarstan_magistrate`, `vsrf`.
 
+`court_id_can_empty: true` — сайт без `court_id` ищет **по всем своим судам** одним
+запросом: `moscow` (суды общей юрисдикции Москвы), `moscow_magistrate` (мировые Москвы),
+`spb_magistrate` (212 участков СПб), `tatarstan_magistrate` (191 участок Татарстана),
+`kad`, `vsrf`.
+
+- `spb_magistrate` без участка и без периода ищет за последние 5 лет: сам сайт в таком
+  случае молча берёт только два месяца.
+- `tatarstan_magistrate`: `court_id` — имя сайта участка (`kirov6`) или его номер
+  (`191`; это номер из кода каталога `16MS0191`). В каталоге у участков Татарстана пока
+  старый адрес `mirsud.tatar.ru/courtsinaction/…`, по нему `/v1/resolve` участок не
+  определит — берите номер из кода суда.
+
 ---
 
 ## 3. Поиск дел — `POST https://prsr.lawmatic.ru/v1/urls`
@@ -371,6 +383,9 @@ if (!in_array($view['status'], ['queued', 'running'], true)) {
 $cards = $client->createCardsJob(['https://…', 'https://…']);   // до 500 ссылок; data.case — карточка как в §4
 ```
 
+- `process_types` — список видов производства (§7), по шагу на каждый; `instances` —
+  список инстанций (§7, только `vsrf` и `moscow`), по шагу на каждую пару «вид ×
+  инстанция». Пусто — по умолчанию парсера и все инстанции.
 - `queue`: `monitoring` (по расписанию) или `adhoc` (разовые) — по умолчанию очередь клиента.
 - `group` — группа заданий одного дела, например `court-search:42` у поиска по набору
   судов, где задание на каждый сайт. Сервис делит воркеры между группами по
@@ -444,18 +459,32 @@ curl -sS "https://courts.lawmatic.ru/api/v1/courts/${COURT_ID}" \
 | `date_from`, `date_to` | Дата регистрации от / до (`дд.мм.гггг`) | `"01.01.2024"` |
 | `case_final_date_from`, `case_final_date_to` | Дата окончания дела от / до | `"01.01.2024"` |
 | `process_type` | Вид производства, значения — у каждого парсера свои (ниже). Пусто — по умолчанию парсера | `"criminal"` |
+| `instance` | Инстанция — только `vsrf` и `moscow` (ниже). Пусто — все инстанции | `"APPEAL"` |
 | `page` | Номер страницы (с 1) | `1` |
 
 Значения `process_type`. Неизвестное значение — ошибка запроса, а не поиск «по умолчанию».
 
 | Парсер | Значения | Пусто |
 |--------|----------|-------|
-| `federal` | `civil`, `admin` (КАС), `criminal`, `adm_offense` (КоАП), `materials`, `civil_appeal`, `criminal_appeal`, `adm_offense_appeal` | `civil` |
-| `federal_magistrate` | `civil`, `criminal`, `adm_offense` | `civil` |
+| `federal` | `civil`, `admin` (КАС), `criminal`, `adm_offense` (КоАП), `materials`, `civil_appeal`, `admin_appeal` (КАС, у областных судов), `criminal_appeal`, `adm_offense_appeal` | `civil` |
+| `federal_magistrate` | `civil` (вместе с КАС — на сайтах участков это одна вкладка), `criminal`, `adm_offense`. Материалов участки msudrf не публикуют | `civil` |
 | `cassation` | `civil` | `civil` |
-| `moscow` | код формы поиска mos-gorsud.ru (`2` — гражданские, …) | все виды |
-| `moscow_magistrate` | код формы поиска mos-sud.ru (`2` — гражданские, …) | `2` |
-| `spb_magistrate` | `civil`, … как на mirsud.spb.ru | `civil` |
+| `moscow` | код формы поиска mos-gorsud.ru: `1` — КАС, `2` — гражданские, `3` — КоАП, `4` — материалы до регистрации, `5` — исполнительное производство, `6` — уголовные; `all` — все виды | все виды |
+| `moscow_magistrate` | те же коды mos-sud.ru; `all` — все виды одним запросом | `2` |
+| `spb_magistrate` | `civil`, `adm`, `criminal` | `civil` |
+| `tatarstan_magistrate` | `1` — КАС, `2` — гражданские, `3` — КоАП, `6` — уголовные | `2` |
+| `vsrf` | `CIVIL`, `ECONOMIC`, `ADMINISTRATIVE`, `ADMINISTRATIVE_INFRACTION`, `CRIMINAL`, `DISCIPLINARY_DISPUTE` | все виды |
+
+Значения `instance` (другие парсеры инстанцию не фильтруют: `instance` для них — ошибка
+запроса).
+
+| Парсер | Значения |
+|--------|----------|
+| `vsrf` | `FIRST`, `APPEAL`, `CASSATION_NOT_INTO_FORCE` (кассация на не вступившее в силу решение), `CASSATION_INTO_FORCE` (на вступившее), `SUPERVISORY`, `DETERMINATION_CASE` (дела о подсудности) |
+| `moscow` | `1` — первая, `2` — апелляция, `3` — кассация в Мосгорсуде, `4` — президиум |
+
+Выдача mos-gorsud, mos-sud и mirsud.tatarstan.ru обрезана на 1500 делах
+(`truncated: true`) — сужайте период; задание (§5.1) делит его само.
 
 Поля `reg_date_start` / `reg_date_stop` старого API больше не действуют —
 вместо них `date_from` / `date_to`.
