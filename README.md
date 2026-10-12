@@ -466,7 +466,7 @@ curl -sS "https://courts.lawmatic.ru/api/v1/courts/${COURT_ID}" \
 
 | Парсер | Значения | Пусто |
 |--------|----------|-------|
-| `federal` | `civil`, `admin` (КАС), `criminal`, `adm_offense` (КоАП), `materials`, `civil_appeal`, `admin_appeal` (КАС, у областных судов), `criminal_appeal`, `adm_offense_appeal` | `civil` |
+| `federal` | `civil`, `admin` (КАС), `criminal`, `adm_offense` (КоАП), `materials` (все материалы), `materials_civil` (только гражданские), `materials_admin` (КАС), `civil_appeal`, `admin_appeal` (КАС, у областных судов), `criminal_appeal`, `adm_offense_appeal` | `civil` |
 | `federal_magistrate` | `civil` (вместе с КАС — на сайтах участков это одна вкладка), `criminal`, `adm_offense`. Материалов участки msudrf не публикуют | `civil` |
 | `cassation` | `civil`, `admin` (КАС), `criminal`, `adm_offense` (КоАП) | `civil` |
 | `moscow` | код формы поиска mos-gorsud.ru: `1` — КАС, `2` — гражданские, `3` — КоАП, `4` — материалы до регистрации, `5` — исполнительное производство, `6` — уголовные; `all` — все виды | все виды |
