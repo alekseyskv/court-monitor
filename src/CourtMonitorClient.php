@@ -15,7 +15,7 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
  * Клиент внешнего API мониторинга судебных дел (CourtMonitor).
  *
  * Покрывает две внешних поверхности (полный справочник — README.md рядом):
- *  - каталог судов  POST https://courts.lawmatic.ru/api/v1/courts/search
+ *  - каталог судов  POST https://allcourts.ru/catalog/api/v1/courts/search
  *  - парсеры дел    https://prsr.lawmatic.ru:
  *      POST /v1/resolve — парсер и код суда по URL сайта суда
  *      POST /v1/urls    — поиск дел (URL, краткие карточки, подсчёт)
@@ -36,7 +36,7 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
  */
 class CourtMonitorClient implements CourtMonitorClientInterface
 {
-    public const DEFAULT_COURTS_URL = 'https://courts.lawmatic.ru';
+    public const DEFAULT_COURTS_URL = 'https://allcourts.ru/catalog';
     public const DEFAULT_PARSER_URL = 'https://prsr.lawmatic.ru';
 
     /** Сколько URL дел отправлять в парсер за один запрос полных карточек. */
@@ -68,7 +68,7 @@ class CourtMonitorClient implements CourtMonitorClientInterface
     }
 
     // ---------------------------------------------------------------------
-    // 1. Каталог судов — courts.lawmatic.ru
+    // 1. Каталог судов — allcourts.ru/catalog
     // ---------------------------------------------------------------------
 
     /**
