@@ -1,7 +1,7 @@
 # Наборы судов в Legalic: что нужно от клиента court-monitor и справочника судов
 
 Дата: 10.10.2026
-Кому: Алексею (пакет lawmatic/court-monitor, справочник courts.lawmatic.ru)
+Кому: Алексею (пакет lawmatic/court-monitor, справочник allcourts.ru/catalog)
 От: Сергей (разбор и реализация в Legalic)
 
 Legalic научился искать дела и вести мониторинг сразу по **набору судов**:
@@ -57,7 +57,7 @@ $job = $client->createMultiSearchJob(
 
 ---
 
-## 3. Справочник courts.lawmatic.ru
+## 3. Справочник allcourts.ru/catalog
 
 ### 3.1. Ошибка данных: Люблинский районный суд Москвы
 
@@ -73,7 +73,7 @@ $job = $client->createMultiSearchJob(
 Проверка:
 
 ```bash
-curl -sS -X POST "https://courts.lawmatic.ru/api/v1/courts/search" \
+curl -sS -X POST "https://allcourts.ru/catalog/api/v1/courts/search" \
   -H "X-Auth-Token: ${COURTS_TOKEN}" -H "Content-Type: application/json" \
   -d '{"limit":50,"offset":0,"court_type":"RS","code":{"value":"77","match":"prefix"}}'
 ```
@@ -122,6 +122,11 @@ Legalic держит копию справочника на сутки (`legalic
 суда по названию и коду из интерфейса выбора судов (как и раньше). С лимитом
 20 запросов в секунду на токен это укладывается с запасом (уточнено 11.10.2026:
 суточной квоты у справочника нет — README §1.4 поправлен).
+
+> 03.11.2026: справочник переехал на `allcourts.ru/catalog`; суточная квота на поиск и
+> `get-updates` теперь есть (README §1, документация — `allcourts.ru/catalog/docs`).
+> Выгрузка изменённых с даты появилась: `GET /api/v1/metadata/get-updates?since=…`, но
+> `since` не раньше даты последнего обновления — дельта только за последний день обновления.
 
 ---
 

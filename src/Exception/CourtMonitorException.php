@@ -4,7 +4,7 @@ namespace Lawmatic\CourtMonitor\Exception;
 
 /**
  * Ошибка при общении с внешним API мониторинга судебных дел (CourtMonitor):
- * каталог судов courts.lawmatic.ru и парсеры prsr.lawmatic.ru.
+ * каталог судов allcourts.ru/catalog и парсеры prsr.lawmatic.ru.
  *
  * Базовый класс: ловите его, если причина не важна. Конкретный вид ошибки —
  * в наследниках:

@@ -1,7 +1,7 @@
 # CourtMonitor — клиент и справочник API
 
 Composer-пакет `lawmatic/court-monitor`: PHP-клиент внешнего сервиса мониторинга
-судебных дел — каталог судов (`courts.lawmatic.ru`) и парсеры дел (`prsr.lawmatic.ru`).
+судебных дел — каталог судов (`allcourts.ru/catalog`) и парсеры дел (`prsr.lawmatic.ru`).
 
 ## Установка
 
@@ -108,9 +108,9 @@ $env:PARSER_KEY = "ваш_api_ключ"
 
 ---
 
-## 1. Каталог судов — `courts.lawmatic.ru`
+## 1. Каталог судов — `allcourts.ru/catalog`
 
-Базовый URL: `https://courts.lawmatic.ru`
+Базовый URL: `https://allcourts.ru/catalog`
 Все запросы — с заголовком `X-Auth-Token: <токен>`. Без него — HTTP 400
 `{"error":"missing X-Data or X-Auth-Token"}`.
 
@@ -119,7 +119,7 @@ $env:PARSER_KEY = "ваш_api_ключ"
 **Метод клиента:** `searchCourtByName` — по части названия (`contains`).
 
 ```bash
-curl -sS -X POST "https://courts.lawmatic.ru/api/v1/courts/search" \
+curl -sS -X POST "https://allcourts.ru/catalog/api/v1/courts/search" \
   -H "X-Auth-Token: ${COURTS_TOKEN}" \
   -H "Content-Type: application/json; charset=utf-8" \
   -d "{\"limit\":20,\"offset\":0,\"name\":{\"value\":\"${COURT_NAME}\",\"match\":\"contains\"}}"
@@ -161,7 +161,7 @@ curl -sS -X POST "https://courts.lawmatic.ru/api/v1/courts/search" \
 **Метод клиента:** `searchCourtByCode` — точное совпадение кода.
 
 ```bash
-curl -sS -X POST "https://courts.lawmatic.ru/api/v1/courts/search" \
+curl -sS -X POST "https://allcourts.ru/catalog/api/v1/courts/search" \
   -H "X-Auth-Token: ${COURTS_TOKEN}" \
   -H "Content-Type: application/json; charset=utf-8" \
   -d "{\"limit\":20,\"offset\":0,\"code\":{\"value\":\"${COURT_CODE}\",\"match\":\"exact\"}}"
@@ -176,7 +176,7 @@ curl -sS -X POST "https://courts.lawmatic.ru/api/v1/courts/search" \
 **Метод клиента:** `getCourtDetail`. `COURT_ID` — поле `id` из ответа поиска.
 
 ```bash
-curl -sS "https://courts.lawmatic.ru/api/v1/courts/${COURT_ID}" \
+curl -sS "https://allcourts.ru/catalog/api/v1/courts/${COURT_ID}" \
   -H "X-Auth-Token: ${COURTS_TOKEN}"
 ```
 
@@ -190,7 +190,7 @@ curl -sS "https://courts.lawmatic.ru/api/v1/courts/${COURT_ID}" \
 **Метод клиента:** `getCourtTypes` — для фильтра `court_type` в поиске.
 
 ```bash
-curl -sS "https://courts.lawmatic.ru/api/v1/court-types" \
+curl -sS "https://allcourts.ru/catalog/api/v1/court-types" \
   -H "X-Auth-Token: ${COURTS_TOKEN}"
 ```
 
@@ -199,9 +199,21 @@ curl -sS "https://courts.lawmatic.ru/api/v1/court-types" \
 
 Постраничный поиск по каталогу — `searchCourts($filter, $limit, $offset)`: фильтры
 как в §1.1, `limit` — до 500 (0 — каталог возьмёт 50), ответ — `{items, total, limit, offset}`,
-где `total` — сколько судов подходит под фильтр всего. Каталог ограничивает
-частоту запросов: 20 в секунду на токен (заголовки `X-RateLimit-Limit`,
-`X-RateLimit-Remaining`, `X-RateLimit-Reset`), сверх лимита отвечает HTTP 429.
+где `total` — сколько судов подходит под фильтр всего. Ещё фильтры каталога:
+`website` (`{value, match}`: `exact` — полный URL, `contains` — фрагмент), `parent_missing`
+(без корректного родителя), `court_types` (массив кодов через «ИЛИ», не вместе с `court_type`).
+Поиск отдаёт действующие суды.
+
+Ограничения токена — два, оба отвечают HTTP 429:
+- **20 запросов в секунду** (заголовки `X-RateLimit-Limit`, `X-RateLimit-Remaining`,
+  `X-RateLimit-Reset`; в документации каталога не описаны, но сервер их шлёт — 03.11.2026);
+- **суточная квота** на `POST /api/v1/courts/search` и `GET /api/v1/metadata/get-updates`
+  (общая); исчерпана — 429 с пустым телом, повторять до следующих суток бессмысленно.
+  Весь каталог (~10 300 судов) — около 21 запроса по 500. Типы судов, карточка суда по id
+  и служебные `GET /api/v1/metadata/last-updated` (дата последнего обновления) и
+  `GET /api/v1/metadata/stats` (сводка по типам и регионам) квоту не тратят.
+
+Документация каталога (OpenAPI): `https://allcourts.ru/catalog/docs`.
 
 ---
 
@@ -430,13 +442,13 @@ $cards = $client->createCardsJob(['https://…', 'https://…']);   // до 500 
 export COURT_CODE_FROM_UID="${UID:0:8}"
 
 # Шаг 1: поиск суда по коду — в ответе уже есть website и hierarchy
-curl -sS -X POST "https://courts.lawmatic.ru/api/v1/courts/search" \
+curl -sS -X POST "https://allcourts.ru/catalog/api/v1/courts/search" \
   -H "X-Auth-Token: ${COURTS_TOKEN}" \
   -H "Content-Type: application/json; charset=utf-8" \
   -d "{\"limit\":1,\"offset\":0,\"code\":{\"value\":\"${COURT_CODE_FROM_UID}\",\"match\":\"exact\"}}"
 
 # Шаг 2 (по желанию): полная карточка по id из ответа
-curl -sS "https://courts.lawmatic.ru/api/v1/courts/${COURT_ID}" \
+curl -sS "https://allcourts.ru/catalog/api/v1/courts/${COURT_ID}" \
   -H "X-Auth-Token: ${COURTS_TOKEN}"
 ```
 
@@ -502,7 +514,7 @@ curl -sS "https://courts.lawmatic.ru/api/v1/courts/${COURT_ID}" \
 | Назначение | Адрес | Аргумент конструктора (константа) |
 |------------|-------|-----------------------------------|
 | Парсеры: `/v1/resolve`, `/v1/urls`, `/v1/parse` | `https://prsr.lawmatic.ru` | `$parserUrl` (`DEFAULT_PARSER_URL`) |
-| Каталог судов | `https://courts.lawmatic.ru` | `$courtsUrl` (`DEFAULT_COURTS_URL`) |
+| Каталог судов | `https://allcourts.ru/catalog` | `$courtsUrl` (`DEFAULT_COURTS_URL`) |
 
 ---
 
